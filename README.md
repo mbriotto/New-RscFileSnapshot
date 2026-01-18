@@ -775,13 +775,7 @@ You should have received a copy of the GNU General Public License along with thi
 - ✅ Execution policy guidance
 
 ### Future Enhancements
-- 🔄 Enhanced error recovery
-- 🔄 Multi-cluster support
-- 🔄 Email notifications
-- 🔄 Slack/Teams integration
-- 🔄 Advanced scheduling (weekly patterns)
-- 🔄 Backup validation
-- 🔄 Dashboard/reporting
+- 🔄 New parameter -UserNote: Sets a custom note. If you don't specify it, it automatically uses the value of -SlaName.
 
 ---
 
