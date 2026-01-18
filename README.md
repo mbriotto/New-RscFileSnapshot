@@ -1,10 +1,13 @@
-# Rubrik FileSet Snapshot Tool
+# New-RscFileSnapshot
 
 PowerShell script for creating on-demand snapshots of Rubrik Filesets via Rubrik Security Cloud (RSC).
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue.svg)](https://github.com/PowerShell/PowerShell)
+
 ## Overview
 
-`Rsc-FileSetSnapshotTool.ps1` automates the creation of on-demand backups for Rubrik Filesets. The script connects to Rubrik Security Cloud, identifies the target host and Fileset, and triggers a snapshot using a specified SLA policy.
+`New-RscFileSnapshot.ps1` automates the creation of on-demand backups for Rubrik Filesets. The script connects to Rubrik Security Cloud, identifies the target host and Fileset, and triggers a snapshot using a specified SLA policy.
 
 ### Key Features
 
@@ -87,11 +90,20 @@ This will open a browser window for interactive authentication.
 
 ## Installation
 
-1. Download `Rsc-FileSetSnapshotTool.ps1` to your desired location
+1. **Clone the repository**
+```powershell
+git clone https://github.com/mbriotto/New-RscFileSnapshot.git
+cd New-RscFileSnapshot
+```
 
-2. (Optional) Place the Service Account JSON file in the same directory
+2. **Download the script** (alternative to cloning)
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mbriotto/New-RscFileSnapshot/main/New-RscFileSnapshot.ps1" -OutFile "New-RscFileSnapshot.ps1"
+```
 
-3. Ensure the Rubrik PowerShell SDK is installed (see Prerequisites)
+3. **(Optional) Place the Service Account JSON file** in the same directory
+
+4. **Ensure the Rubrik PowerShell SDK is installed** (see Prerequisites)
 
 ---
 
@@ -100,7 +112,7 @@ This will open a browser window for interactive authentication.
 ### Basic Syntax
 
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -SlaName <SLA> [OPTIONS]
+.\New-RscFileSnapshot.ps1 -SlaName <SLA> [OPTIONS]
 ```
 
 ### Parameters
@@ -121,39 +133,39 @@ This will open a browser window for interactive authentication.
 
 #### Example 1: Snapshot Local Host
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -SlaName "Gold"
+.\New-RscFileSnapshot.ps1 -SlaName "Gold"
 ```
 Uses local hostname and first available Fileset.
 
 #### Example 2: Specify Host and Fileset
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -HostName "FILESRV01" -SlaName "Gold" -FilesetName "UserProfiles"
+.\New-RscFileSnapshot.ps1 -HostName "FILESRV01" -SlaName "Gold" -FilesetName "UserProfiles"
 ```
 
 #### Example 3: Linux Host with Wildcard
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -HostName "ubuntu-server" -OsType Linux -SlaName "Silver" -FilesetName "home-*"
+.\New-RscFileSnapshot.ps1 -HostName "ubuntu-server" -OsType Linux -SlaName "Silver" -FilesetName "home-*"
 ```
 
 #### Example 4: Skip Connectivity Check
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -SlaName "Bronze" -SkipConnectivityCheck Yes
+.\New-RscFileSnapshot.ps1 -SlaName "Bronze" -SkipConnectivityCheck Yes
 ```
 
 #### Example 5: Custom Credentials
 ```powershell
 $cred = Get-Credential
-.\Rsc-FileSetSnapshotTool.ps1 -SlaName "Gold" -Credential $cred
+.\New-RscFileSnapshot.ps1 -SlaName "Gold" -Credential $cred
 ```
 
 #### Example 6: Custom Log Location
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -SlaName "Gold" -LogFilePath "C:\Logs\Rubrik" -LogRetentionDays 7
+.\New-RscFileSnapshot.ps1 -SlaName "Gold" -LogFilePath "C:\Logs\Rubrik" -LogRetentionDays 7
 ```
 
 #### Example 7: Disable Logging
 ```powershell
-.\Rsc-FileSetSnapshotTool.ps1 -SlaName "Gold" -EnableFileLog No
+.\New-RscFileSnapshot.ps1 -SlaName "Gold" -EnableFileLog No
 ```
 
 ---
@@ -164,10 +176,10 @@ $cred = Get-Credential
 
 Log files are created with the following naming convention:
 ```
-RscFileSetSnapshot_YYYYMMDD_HHmmss.log
+New-RscFileSnapshot_YYYYMMDD_HHmmss.log
 ```
 
-Example: `RscFileSetSnapshot_20260117_143022.log`
+Example: `New-RscFileSnapshot_20260117_143022.log`
 
 ### Log Location
 
@@ -195,7 +207,7 @@ To automate snapshots, create a scheduled task:
 ### Using PowerShell
 ```powershell
 $action = New-ScheduledTaskAction -Execute "PowerShell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Rsc-FileSetSnapshotTool.ps1 -SlaName Gold"
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File C:\Scripts\New-RscFileSnapshot.ps1 -SlaName Gold"
 
 $trigger = New-ScheduledTaskTrigger -Daily -At "2:00AM"
 
@@ -206,6 +218,114 @@ Register-ScheduledTask -TaskName "Rubrik Fileset Backup" `
     -Description "Daily on-demand Fileset snapshot"
 ```
 
+### Using PowerShell - Advanced Boot Configuration (Recommended)
+
+This configuration executes the snapshot:
+- **15 minutes after PC startup** (first run)
+- **Every 24 hours** thereafter
+- **Skips execution if already run in the last 24 hours**
+
+```powershell
+# Define the action
+$action = New-ScheduledTaskAction -Execute "PowerShell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"C:\Scripts\New-RscFileSnapshot.ps1`" -SlaName `"Gold`"" `
+    -WorkingDirectory "C:\Scripts"
+
+# Create boot trigger with 15-minute delay
+$triggerBoot = New-ScheduledTaskTrigger -AtStartup
+
+# Create daily backup trigger at 2:00 AM
+$triggerDaily = New-ScheduledTaskTrigger -Daily -At "2:00AM"
+
+# Settings to prevent multiple runs within 24 hours
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -RunOnlyIfNetworkAvailable `
+    -DontStopOnIdleEnd `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 10) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
+    -MultipleInstances IgnoreNew
+
+# Principal (run with highest privileges)
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+
+# Register the task with both triggers
+Register-ScheduledTask `
+    -TaskName "Rubrik Fileset Backup - Auto" `
+    -Action $action `
+    -Trigger @($triggerBoot, $triggerDaily) `
+    -Settings $settings `
+    -Principal $principal `
+    -Description "Runs Rubrik snapshot 15 min after boot and daily at 2 AM (prevents duplicate runs within 24h)"
+
+# Configure boot trigger with 15-minute delay and 24-hour repetition using COM
+$taskService = New-Object -ComObject Schedule.Service
+$taskService.Connect()
+$taskFolder = $taskService.GetFolder("\")
+$task = $taskFolder.GetTask("Rubrik Fileset Backup - Auto")
+$taskDefinition = $task.Definition
+
+# Modify the boot trigger (first trigger)
+$bootTrigger = $taskDefinition.Triggers.Item(1)
+$bootTrigger.Delay = "PT15M"  # 15-minute delay after boot
+$bootTrigger.Repetition.Interval = "PT24H"  # Repeat every 24 hours
+$bootTrigger.Repetition.Duration = ""  # Run indefinitely
+$bootTrigger.Repetition.StopAtDurationEnd = $false
+
+# Save the modified task
+$taskFolder.RegisterTaskDefinition(
+    "Rubrik Fileset Backup - Auto",
+    $taskDefinition,
+    6,  # TASK_CREATE_OR_UPDATE
+    "SYSTEM",
+    $null,
+    5   # TASK_LOGON_SERVICE_ACCOUNT
+) | Out-Null
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "  Task Scheduler Configuration Complete" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Task Name:" -ForegroundColor Cyan
+Write-Host "  Rubrik Fileset Backup - Auto" -ForegroundColor White
+Write-Host ""
+Write-Host "Execution Schedule:" -ForegroundColor Cyan
+Write-Host "  • First run: 15 minutes after PC startup" -ForegroundColor White
+Write-Host "  • Recurring: Every 24 hours from first run" -ForegroundColor White
+Write-Host "  • Backup trigger: Daily at 2:00 AM" -ForegroundColor White
+Write-Host ""
+Write-Host "Duplicate Prevention:" -ForegroundColor Cyan
+Write-Host "  • MultipleInstances = IgnoreNew" -ForegroundColor White
+Write-Host "  • 24-hour repetition interval prevents overlapping" -ForegroundColor White
+Write-Host ""
+Write-Host "To verify configuration:" -ForegroundColor Yellow
+Write-Host "  Get-ScheduledTask -TaskName 'Rubrik Fileset Backup - Auto' | Get-ScheduledTaskInfo" -ForegroundColor Gray
+Write-Host ""
+```
+
+**How this works:**
+- ✅ **PC boots**: Task waits 15 minutes, then executes snapshot
+- ✅ **Next execution**: Exactly 24 hours after first run
+- ✅ **Backup trigger**: If PC was off, daily trigger at 2 AM ensures execution
+- ✅ **Duplicate prevention**: 
+  - `MultipleInstances IgnoreNew` prevents new instances if one is running
+  - 24-hour repetition interval ensures only one run per day
+  - Both triggers won't conflict due to timing and interval settings
+
+**To manually test the task:**
+```powershell
+Start-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto"
+```
+
+**To check last run time:**
+```powershell
+Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskInfo | Select-Object LastRunTime, NextRunTime, LastTaskResult
+```
+
 ### Using Task Scheduler GUI
 
 1. Open Task Scheduler
@@ -213,7 +333,7 @@ Register-ScheduledTask -TaskName "Rubrik Fileset Backup" `
 3. Set trigger (e.g., daily at 2:00 AM)
 4. Action: Start a program
    - Program: `PowerShell.exe`
-   - Arguments: `-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\Rsc-FileSetSnapshotTool.ps1" -SlaName "Gold"`
+   - Arguments: `-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\New-RscFileSnapshot.ps1" -SlaName "Gold"`
 5. Run with highest privileges
 
 ---
@@ -288,16 +408,26 @@ Error: Multiple Filesets match 'FS*'
 
 ## Support
 
-For issues related to:
-- **Script functionality**: Check logs and troubleshooting section
+For issues and questions:
+- **GitHub Issues**: https://github.com/mbriotto/New-RscFileSnapshot/issues
 - **Rubrik PowerShell SDK**: https://github.com/rubrikinc/rubrik-powershell-sdk
 - **Rubrik Security Cloud**: Contact Rubrik Support
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ---
 
 ## Version History
 
-- **1.0** (2026): Initial release by Matteo Briotto
+- **1.0** (January 2026): Initial release
 
 ---
 
@@ -315,9 +445,7 @@ You should have received a copy of the GNU General Public License along with thi
 
 ## Author
 
-**Matteo Briotto**  
-Email: matteo.briotto@gmail.com
-
-Created for Rubrik Security Cloud automation.
+GitHub: [@mbriotto](https://github.com/mbriotto)  
+Repository: https://github.com/mbriotto/New-RscFileSnapshot
 
 ---
