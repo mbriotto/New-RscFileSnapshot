@@ -1,0 +1,56 @@
+# Rubrik Scripts - Git Ignore File
+
+# Rubrik Service Account credentials (NEVER commit these!)
+*.json
+!*-README.json
+!*example*.json
+
+# Encrypted credential files
+*.xml
+rsc_service_account_*.xml
+
+# Log files
+*.log
+Logs/
+logs/
+
+# PowerShell Transcript files
+*.transcript
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# PsExec
+PsExec.exe
+PsExec64.exe
+
+# Test files
+test/
+tests/
+*test*.ps1
+*Test*.ps1
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.code-workspace
+
+# Documentation build artifacts
+*.pdf.tmp
