@@ -9,10 +9,10 @@
     The cluster IP address is automatically extracted from the host's CdmLink.
 
 .NOTES
-    Version:        1.0
+    Version:        1.1
     Author:         Matteo Briotto
     Creation Date:  January 2026
-    Purpose/Change: Initial release - Automated Rubrik Fileset snapshot creation
+    Purpose/Change: Added automatic module detection and installation for seamless SYSTEM account execution
     
 .LINK
     https://github.com/mbriotto/rubrik-scripts
@@ -73,7 +73,9 @@
 
 .NOTES
     Requirements:
-      - Rubrik PowerShell RSC module (Connect-Rsc, Get-RscCluster, Get-RscHost, Get-RscFileset, Get-RscSla, New-RscMutation).
+      - Rubrik PowerShell RSC module (RubrikSecurityCloud).
+        The script automatically checks for the module and attempts installation if missing.
+        For SYSTEM account execution (Task Scheduler), the module will be auto-installed on first run.
 
     Default settings:
       - If **-HostName** is not specified, the **FQDN** of the local computer is used.
@@ -95,6 +97,7 @@
       - Exit 1: error/insufficient parameters or conditions not met.
 
 .VERSION
+    1.1 - Added automatic module detection and installation
     1.0 - Initial release
 
 .AUTHOR
@@ -146,6 +149,103 @@ param(
     [switch] $Help
 )
 
+#region --- MODULE CHECK & IMPORT ----------------------------------------------
+
+function Initialize-RubrikModule {
+    <#
+    .SYNOPSIS
+        Ensures the RubrikSecurityCloud module is available and loaded.
+    
+    .DESCRIPTION
+        Checks if the RubrikSecurityCloud module is installed and imported.
+        If missing, attempts to install it automatically.
+        Critical for SYSTEM account execution via Task Scheduler.
+    #>
+    
+    $moduleName = 'RubrikSecurityCloud'
+    
+    Write-Host "[Module Check] Verifying $moduleName module..." -ForegroundColor Cyan
+    
+    # Check if module is already imported
+    $moduleLoaded = Get-Module -Name $moduleName -ErrorAction SilentlyContinue
+    if ($moduleLoaded) {
+        Write-Host "[Module Check] Module $moduleName is already loaded (Version: $($moduleLoaded.Version))" -ForegroundColor Green
+        return $true
+    }
+    
+    # Check if module is available (installed but not loaded)
+    $moduleAvailable = Get-Module -Name $moduleName -ListAvailable -ErrorAction SilentlyContinue
+    if ($moduleAvailable) {
+        Write-Host "[Module Check] Module $moduleName found but not loaded. Importing..." -ForegroundColor Yellow
+        try {
+            Import-Module -Name $moduleName -ErrorAction Stop
+            $importedModule = Get-Module -Name $moduleName
+            Write-Host "[Module Check] Successfully imported $moduleName (Version: $($importedModule.Version))" -ForegroundColor Green
+            return $true
+        } catch {
+            Write-Host "[Module Check] ERROR: Failed to import module: $($_.Exception.Message)" -ForegroundColor Red
+            return $false
+        }
+    }
+    
+    # Module not found - attempt installation
+    Write-Host "[Module Check] Module $moduleName not found. Attempting automatic installation..." -ForegroundColor Yellow
+    Write-Host "[Module Check] This may take several minutes on first run..." -ForegroundColor Yellow
+    
+    try {
+        # Try installing for current user first (works for most scenarios)
+        Write-Host "[Module Check] Installing $moduleName for CurrentUser scope..." -ForegroundColor Cyan
+        Install-Module -Name $moduleName -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Write-Host "[Module Check] Installation completed successfully." -ForegroundColor Green
+        
+        # Import the newly installed module
+        Import-Module -Name $moduleName -ErrorAction Stop
+        $importedModule = Get-Module -Name $moduleName
+        Write-Host "[Module Check] Successfully imported $moduleName (Version: $($importedModule.Version))" -ForegroundColor Green
+        return $true
+        
+    } catch {
+        Write-Host "[Module Check] ERROR: Failed to install module for CurrentUser scope." -ForegroundColor Red
+        Write-Host "[Module Check] Error details: $($_.Exception.Message)" -ForegroundColor Red
+        
+        # If CurrentUser fails, try AllUsers (requires admin rights)
+        Write-Host "[Module Check] Attempting installation with AllUsers scope (requires admin rights)..." -ForegroundColor Yellow
+        try {
+            Install-Module -Name $moduleName -Scope AllUsers -Force -AllowClobber -ErrorAction Stop
+            Import-Module -Name $moduleName -ErrorAction Stop
+            $importedModule = Get-Module -Name $moduleName
+            Write-Host "[Module Check] Successfully installed and imported $moduleName (Version: $($importedModule.Version))" -ForegroundColor Green
+            return $true
+        } catch {
+            Write-Host "[Module Check] CRITICAL ERROR: Failed to install module with AllUsers scope." -ForegroundColor Red
+            Write-Host "[Module Check] Error details: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "" -ForegroundColor Red
+            Write-Host "MANUAL INSTALLATION REQUIRED:" -ForegroundColor Yellow
+            Write-Host "  Please run the following command as Administrator:" -ForegroundColor Yellow
+            Write-Host "  Install-Module -Name $moduleName -Scope AllUsers -Force" -ForegroundColor Cyan
+            Write-Host "" -ForegroundColor Yellow
+            Write-Host "  Or for current user only:" -ForegroundColor Yellow
+            Write-Host "  Install-Module -Name $moduleName -Scope CurrentUser -Force" -ForegroundColor Cyan
+            Write-Host ""
+            return $false
+        }
+    }
+}
+
+# Execute module initialization
+$moduleInitialized = Initialize-RubrikModule
+if (-not $moduleInitialized) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host "CRITICAL: Cannot proceed without RubrikSecurityCloud module" -ForegroundColor Red
+    Write-Host "========================================" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ""
+
+#endregion
+
 #region --- HELP & PRE-CHECKS --------------------------------------------------
 
 function Show-Help {
@@ -175,7 +275,7 @@ function Show-Help {
     Write-Host "  .\New-RscFileSnapshot.ps1 -SlaName Gold -LogRetentionDays 7 -LogFilePath C:\Logs\Rubrik"
     Write-Host ""
     Write-Host "    Tips:" -ForegroundColor Yellow
-    Write-Host "  - Make sure you have the Rubrik RSC module installed and imported."
+    Write-Host "  - The RubrikSecurityCloud module is automatically installed if missing."
     Write-Host "  - The cluster IP is automatically detected from the host's CdmLink in Rubrik."
     Write-Host "  - To configure a Service Account, copy the JSON file to the script directory."
     Write-Host "  - The JSON file is automatically processed and deleted after configuration."
