@@ -1,12 +1,7 @@
 @ECHO OFF
 REM ============================================================================
-REM Initialize-RubrikEnvironment.cmd
-REM Version: 1.0 - Initial release
-REM 
-REM This script initializes the working environment for Rubrik Security Cloud
-REM - Installs the Rubrik Security Cloud PowerShell Module (if needed)
-REM - Unblocks PowerShell scripts in the current directory
-REM - Shows next steps to configure backups
+REM Initialize-RubrikEnvironment.cmd  
+REM Version: 1.5.0 - Embedded PowerShell script (FINAL)
 REM ============================================================================
 
 SETLOCAL EnableDelayedExpansion
@@ -17,128 +12,271 @@ ECHO   Rubrik Security Cloud - Environment Initialization
 ECHO ============================================================
 ECHO.
 
-REM Check for administrative privileges
+REM Check admin
 NET SESSION >nul 2>&1
 IF %ERRORLEVEL% NEQ 0 (
-    ECHO [ERROR] This script MUST be run as Administrator!
-    ECHO.
-    ECHO The RubrikSecurityCloud module needs to be installed for ALL users
-    ECHO including SYSTEM account for scheduled tasks
-    ECHO.
-    ECHO Please:
-    ECHO   1. Right-click on this script
-    ECHO   2. Select "Run as Administrator"
-    ECHO   3. Run the script again
-    ECHO.
+    ECHO [ERROR] Run as Administrator!
     PAUSE
     EXIT /B 1
 )
 
-REM Get current directory
 SET "SCRIPT_DIR=%~dp0"
 CD /D "%SCRIPT_DIR%"
 
-ECHO [STEP 1/3] Checking and installing Rubrik PowerShell Module...
+ECHO [STEP 1/4] Checking module...
 ECHO.
 
-REM Check if module is already installed
 PowerShell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Module -ListAvailable -Name RubrikSecurityCloud) { exit 0 } else { exit 1 }"
 
 IF %ERRORLEVEL% EQU 0 (
-    ECHO [OK] Rubrik Security Cloud PowerShell Module found
-    
-    REM Check if module is already imported
-    PowerShell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Module -Name RubrikSecurityCloud) { exit 0 } else { exit 1 }"
-    
-    IF %ERRORLEVEL% EQU 0 (
-        ECHO [OK] Module already imported in current session
-        ECHO.
-        GOTO :UNBLOCK_SCRIPTS
-    ) ELSE (
-        ECHO [INFO] Module installed but not imported
-        ECHO [INFO] Importing module...
-        
-        REM Import the module
-        PowerShell -NoProfile -ExecutionPolicy Bypass -Command "try { Import-Module RubrikSecurityCloud -ErrorAction Stop; exit 0 } catch { exit 1 }"
-        
-        IF %ERRORLEVEL% EQU 0 (
-            ECHO [OK] Module imported successfully!
-            ECHO.
-            GOTO :UNBLOCK_SCRIPTS
-        ) ELSE (
-            ECHO [ERROR] Error importing module.
-            ECHO.
-            GOTO :NEXT_STEPS
-        )
+    ECHO [OK] Already installed
+    PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$m = Get-Module -ListAvailable -Name RubrikSecurityCloud | Select -First 1; Write-Host '  Version:' $m.Version -ForegroundColor Gray"
+    ECHO.
+    GOTO :UNBLOCK_SCRIPTS
+)
+
+ECHO [INFO] Module not found. Checking options...
+ECHO.
+
+SET "OFFLINE_MODULE_FOUND=0"
+SET "OFFLINE_MODULE_PATH="
+
+IF EXIST "%SCRIPT_DIR%RubrikSecurityCloud" (
+    IF EXIST "%SCRIPT_DIR%RubrikSecurityCloud\RubrikSecurityCloud.psd1" (
+        SET "OFFLINE_MODULE_FOUND=1"
+        SET "OFFLINE_MODULE_PATH=%SCRIPT_DIR%RubrikSecurityCloud"
+        ECHO [FOUND] Folder: .\RubrikSecurityCloud\
     )
 )
 
-ECHO [INFO] Module not found. Starting installation...
+IF EXIST "%SCRIPT_DIR%RubrikSecurityCloud.zip" (
+    SET "OFFLINE_MODULE_FOUND=1"
+    SET "OFFLINE_MODULE_PATH=%SCRIPT_DIR%RubrikSecurityCloud.zip"
+    ECHO [FOUND] ZIP: .\RubrikSecurityCloud.zip
+)
+
+IF !OFFLINE_MODULE_FOUND! EQU 0 (
+    FOR %%F IN ("%SCRIPT_DIR%*rubrik*.zip") DO (
+        SET "OFFLINE_MODULE_FOUND=1"
+        SET "OFFLINE_MODULE_PATH=%%F"
+        ECHO [FOUND] ZIP: %%~nxF
+        GOTO :FOUND_OFFLINE
+    )
+)
+
+:FOUND_OFFLINE
+
+IF !OFFLINE_MODULE_FOUND! EQU 1 (
+    ECHO.
+    ECHO ============================================================
+    ECHO   Installation Method
+    ECHO ============================================================
+    ECHO.
+    ECHO   [1] OFFLINE (recommended)
+    ECHO   [2] ONLINE (PowerShell Gallery)
+    ECHO   [3] Cancel
+    ECHO.
+    CHOICE /C 123 /N /M "Choice [1/2/3]: "
+    
+    IF !ERRORLEVEL! EQU 1 GOTO :INSTALL_OFFLINE
+    IF !ERRORLEVEL! EQU 2 GOTO :INSTALL_ONLINE
+    IF !ERRORLEVEL! EQU 3 GOTO :SHOW_NEXT_STEPS
+) ELSE (
+    ECHO [INFO] Attempting online installation...
+    ECHO.
+    GOTO :INSTALL_ONLINE
+)
+
+:INSTALL_OFFLINE
+ECHO.
+ECHO ============================================================
+ECHO   Installing from Offline Package
+ECHO ============================================================
 ECHO.
 
-REM Install Rubrik Security Cloud module
-PowerShell -NoProfile -ExecutionPolicy Bypass -Command "Write-Host 'Installing RubrikSecurityCloud PowerShell Module...' -ForegroundColor Cyan; Write-Host 'Installing for ALL USERS (including SYSTEM account)...' -ForegroundColor Yellow; Write-Host 'This may take a few minutes...' -ForegroundColor Gray; Write-Host ''; try { if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) { Write-Host '[SETUP] Installing NuGet provider...' -ForegroundColor Yellow; Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null; } Write-Host '[DOWNLOAD] Downloading RubrikSecurityCloud module...' -ForegroundColor Cyan; Install-Module -Name RubrikSecurityCloud -Scope AllUsers -Force -AllowClobber; Write-Host ''; Write-Host '[SUCCESS] Module installed successfully for ALL USERS!' -ForegroundColor Green; Import-Module RubrikSecurityCloud; $version = (Get-Module RubrikSecurityCloud).Version; Write-Host '[OK] Module imported - Version:' $version -ForegroundColor Green; Write-Host '[INFO] Module available for SYSTEM account (scheduled tasks)' -ForegroundColor Cyan; exit 0; } catch { Write-Host ''; Write-Host '[ERROR] Error during installation:' $_.Exception.Message -ForegroundColor Red; Write-Host '[HINT] Make sure you are running as Administrator' -ForegroundColor Yellow; exit 1; }"
+REM Extract embedded PowerShell script to temp file
+SET "TEMP_PS1=%TEMP%\Install-RscOffline-%RANDOM%.ps1"
+findstr /B /C:"#PS1#" "%~f0" > "%TEMP_PS1%.tmp"
+powershell -Command "(Get-Content '%TEMP_PS1%.tmp') -replace '^#PS1# ', '' | Set-Content '%TEMP_PS1%' -Encoding UTF8"
+del "%TEMP_PS1%.tmp"
+
+REM Execute the script
+PowerShell -NoProfile -ExecutionPolicy Bypass -File "%TEMP_PS1%" -ModulePath "!OFFLINE_MODULE_PATH!"
+SET RESULT=%ERRORLEVEL%
+
+REM Clean up
+DEL "%TEMP_PS1%" 2>nul
+
+IF %RESULT% EQU 0 (
+    ECHO.
+    GOTO :UNBLOCK_SCRIPTS
+) ELSE (
+    ECHO.
+    ECHO [ERROR] Offline installation failed
+    ECHO.
+    ECHO Try online installation instead? (Y/N)
+    CHOICE /C YN /N /M "> "
+    IF !ERRORLEVEL! EQU 1 (
+        ECHO.
+        GOTO :INSTALL_ONLINE
+    ) ELSE (
+        GOTO :SHOW_NEXT_STEPS
+    )
+)
+
+:INSTALL_ONLINE
+ECHO.
+ECHO ============================================================
+ECHO   Installing from PowerShell Gallery
+ECHO ============================================================
+ECHO.
+
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;Write-Host 'Installing module...' -ForegroundColor Cyan;Write-Host 'For ALL USERS (SYSTEM included)' -ForegroundColor Yellow;Write-Host '';try{Write-Host '[SETUP] Configuring...' -ForegroundColor Cyan;$g=Get-PSRepository PSGallery -EA 0;if(!$g){Register-PSRepository -Default};Set-PSRepository PSGallery -InstallationPolicy Trusted;Write-Host '[DOWNLOAD] Installing NuGet...' -ForegroundColor Cyan;Install-PackageProvider NuGet -MinimumVersion 2.8.5.201 -Force|Out-Null;Write-Host '[DOWNLOAD] Downloading module (~50-100MB)...' -ForegroundColor Cyan;Write-Host '[INFO] This may take several minutes...' -ForegroundColor Gray;Install-Module RubrikSecurityCloud -Scope AllUsers -Force -AllowClobber;Write-Host '';Write-Host '[SUCCESS] Installed!' -ForegroundColor Green;Import-Module RubrikSecurityCloud;$v=(Get-Module RubrikSecurityCloud).Version;Write-Host \"[OK] Version: $v\" -ForegroundColor Green;exit 0}catch{Write-Host '';Write-Host \"[ERROR] $($_.Exception.Message)\" -ForegroundColor Red;exit 1}"
 
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
-    ECHO [ERROR] Module installation failed!
-    ECHO.
-    ECHO Common causes:
-    ECHO   - Not running as Administrator
-    ECHO   - No internet connection
-    ECHO   - PowerShell Gallery blocked by firewall
-    ECHO.
-    ECHO To install manually:
-    ECHO   1. Run PowerShell as Administrator
-    ECHO   2. Execute: Install-Module RubrikSecurityCloud -Scope AllUsers -Force
-    ECHO.
-    GOTO :NEXT_STEPS
+    ECHO [ERROR] Online installation failed
+    GOTO :SHOW_NEXT_STEPS
 )
 
 ECHO.
 
 :UNBLOCK_SCRIPTS
-ECHO [STEP 2/3] Unblocking PowerShell scripts in current directory...
+ECHO [STEP 2/4] Unblocking scripts...
 ECHO.
 
-REM Unblock all PowerShell scripts in current directory
-PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$scriptPath = '%SCRIPT_DIR%'; $psFiles = Get-ChildItem -Path $scriptPath -Filter '*.ps1' -ErrorAction SilentlyContinue; if ($psFiles.Count -eq 0) { Write-Host '[INFO] No PowerShell scripts (.ps1) found in directory' -ForegroundColor Yellow; } else { Write-Host ('[INFO] Found ' + $psFiles.Count + ' PowerShell script(s)') -ForegroundColor Cyan; foreach ($file in $psFiles) { try { Unblock-File -Path $file.FullName -ErrorAction Stop; Write-Host ('[OK] Unblocked: ' + $file.Name) -ForegroundColor Green; } catch { Write-Host ('[SKIP] ' + $file.Name + ' - Already unblocked or error') -ForegroundColor Gray; } } }"
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$f=Get-ChildItem '%SCRIPT_DIR%' -Filter *.ps1 -EA 0;if($f){$f|ForEach-Object{Unblock-File $_.FullName -EA 0;Write-Host \"[OK] $($_.Name)\" -ForegroundColor Green}}"
 
 ECHO.
-ECHO [STEP 3/3] Configuration completed
+ECHO [STEP 3/4] Verifying...
 ECHO.
 
-:NEXT_STEPS
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "try{Import-Module RubrikSecurityCloud;$v=(Get-Module RubrikSecurityCloud).Version;Write-Host '[OK] Version:' $v -ForegroundColor Green;exit 0}catch{Write-Host '[ERROR] Verification failed' -ForegroundColor Red;exit 1}"
+
+ECHO.
+ECHO [STEP 4/4] Complete
+ECHO.
+
+:SHOW_NEXT_STEPS
 ECHO ============================================================
-ECHO   Initialization Complete!
+ECHO   Status
 ECHO ============================================================
 ECHO.
-ECHO Next Steps:
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "if(Get-Module -ListAvailable RubrikSecurityCloud){$m=Get-Module -ListAvailable RubrikSecurityCloud|Select -First 1;Write-Host '  Module: [OK] Installed' -ForegroundColor Green;Write-Host '  Version:' $m.Version -ForegroundColor Gray}else{Write-Host '  Module: [FAIL] Not installed' -ForegroundColor Red}"
 ECHO.
-ECHO 1. Create a Service Account in Rubrik Security Cloud
-ECHO    Run:
-ECHO    .\New-RscServiceAccount.ps1 -ServiceAccountName 'FilesetBackup'
+ECHO ============================================================
+ECHO   Next Steps
+ECHO ============================================================
 ECHO.
-ECHO 2. Download the Service Account JSON credentials
-ECHO    - Log in to Rubrik Security Cloud console
-ECHO    - Go to Settings ^> Users ^> Service Accounts
-ECHO    - Download the JSON credentials file
-ECHO    - Place the JSON file in this directory:
-ECHO      %SCRIPT_DIR%
+ECHO 1. Create Service Account
+ECHO    powershell -File .\New-RscServiceAccount.ps1 -ServiceAccountName "FilesetBackup"
 ECHO.
-ECHO 3. Run the snapshot script
-ECHO    Run:
-ECHO    .\New-RscFileSnapshot.ps1 -SlaName 'Gold'
+ECHO 2. Download JSON credentials and place here
 ECHO.
-ECHO 4. (Optional) Create scheduled tasks for automatic backups
-ECHO    Run:
-ECHO    .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold'
+ECHO 3. Schedule task (auto-auth)
+ECHO    powershell -File .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
+ECHO.
+ECHO 4. Test snapshot
+ECHO    powershell -File .\New-RscFileSnapshot.ps1 -SlaName "Gold"
 ECHO.
 ECHO -------------------------------------------------------------
-ECHO For more information:
 ECHO https://docs.rubrik.com/
 ECHO -------------------------------------------------------------
 ECHO.
 
+PAUSE
 ENDLOCAL
 EXIT /B 0
+
+REM ============================================================================
+REM EMBEDDED POWERSHELL SCRIPT - Lines starting with #PS1# are extracted
+REM ============================================================================
+#PS1# param([string]$ModulePath)
+#PS1# 
+#PS1# $destPath = "$env:ProgramFiles\WindowsPowerShell\Modules\RubrikSecurityCloud\"
+#PS1# 
+#PS1# Write-Host "[INFO] Source: $ModulePath" -ForegroundColor Cyan
+#PS1# Write-Host "[INFO] Dest: $destPath" -ForegroundColor Cyan
+#PS1# Write-Host ""
+#PS1# 
+#PS1# try {
+#PS1#     $isZip = $ModulePath -match '\.(zip|nupkg)$'
+#PS1#     $tempDir = $null
+#PS1#     
+#PS1#     if ($isZip) {
+#PS1#         Write-Host "[INFO] Extracting archive..." -ForegroundColor Yellow
+#PS1#         $tempDir = Join-Path $env:TEMP "RscModule_$(Get-Random)"
+#PS1#         New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+#PS1#         Add-Type -AssemblyName System.IO.Compression.FileSystem
+#PS1#         [System.IO.Compression.ZipFile]::ExtractToDirectory($ModulePath, $tempDir)
+#PS1#         Write-Host "[OK] Archive extracted" -ForegroundColor Green
+#PS1#         
+#PS1#         # Check if extracted a .nupkg file (NuGet packages are also ZIP files)
+#PS1#         $nupkgFile = Get-ChildItem -Path $tempDir -Filter '*.nupkg' -File | Select-Object -First 1
+#PS1#         if ($nupkgFile) {
+#PS1#             Write-Host "[INFO] Found .nupkg file, extracting again..." -ForegroundColor Yellow
+#PS1#             $nupkgDir = Join-Path $tempDir "nupkg_extracted"
+#PS1#             New-Item -Path $nupkgDir -ItemType Directory -Force | Out-Null
+#PS1#             [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgFile.FullName, $nupkgDir)
+#PS1#             $tempDir = $nupkgDir
+#PS1#             Write-Host "[OK] NuGet package extracted" -ForegroundColor Green
+#PS1#         }
+#PS1#         
+#PS1#         # Search for the manifest file recursively
+#PS1#         Write-Host "[INFO] Searching for module manifest..." -ForegroundColor Cyan
+#PS1#         $manifestFile = Get-ChildItem -Path $tempDir -Recurse -Filter 'RubrikSecurityCloud.psd1' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+#PS1#         
+#PS1#         if (-not $manifestFile) {
+#PS1#             # List what we found for debugging
+#PS1#             Write-Host "[DEBUG] Archive contents:" -ForegroundColor Yellow
+#PS1#             Get-ChildItem -Path $tempDir -Recurse | Select-Object -First 20 | ForEach-Object { Write-Host "  $($_.FullName.Replace($tempDir, '.'))" -ForegroundColor Gray }
+#PS1#             throw 'Module manifest (RubrikSecurityCloud.psd1) not found in archive'
+#PS1#         }
+#PS1#         
+#PS1#         # Use the parent directory of the manifest
+#PS1#         $ModulePath = $manifestFile.DirectoryName
+#PS1#         Write-Host "[OK] Found manifest at: $($manifestFile.FullName.Replace($tempDir, 'temp'))" -ForegroundColor Green
+#PS1#     }
+#PS1#     
+#PS1#     $manifestPath = Join-Path $ModulePath 'RubrikSecurityCloud.psd1'
+#PS1#     if (-not (Test-Path -LiteralPath $manifestPath)) {
+#PS1#         throw "Module manifest not found: $manifestPath"
+#PS1#     }
+#PS1#     
+#PS1#     $manifest = Import-PowerShellDataFile -LiteralPath $manifestPath
+#PS1#     $version = $manifest.ModuleVersion
+#PS1#     Write-Host "[INFO] Version: $version" -ForegroundColor Cyan
+#PS1#     Write-Host ""
+#PS1#     
+#PS1#     if (Test-Path $destPath) {
+#PS1#         Write-Host "[INFO] Removing old version..." -ForegroundColor Yellow
+#PS1#         Remove-Item $destPath -Recurse -Force
+#PS1#     }
+#PS1#     
+#PS1#     Write-Host "[INFO] Copying module files..." -ForegroundColor Cyan
+#PS1#     Copy-Item -LiteralPath $ModulePath -Destination $destPath -Recurse -Force
+#PS1#     Write-Host "[OK] Files copied successfully" -ForegroundColor Green
+#PS1#     Write-Host ""
+#PS1#     
+#PS1#     if ($tempDir -and (Test-Path $tempDir)) {
+#PS1#         Write-Host "[INFO] Cleaning temporary files..." -ForegroundColor Gray
+#PS1#         Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+#PS1#     }
+#PS1#     
+#PS1#     Write-Host "[TEST] Importing module..." -ForegroundColor Cyan
+#PS1#     Import-Module RubrikSecurityCloud -Force
+#PS1#     $module = Get-Module RubrikSecurityCloud
+#PS1#     
+#PS1#     Write-Host ""
+#PS1#     Write-Host "[SUCCESS] Installation complete!" -ForegroundColor Green
+#PS1#     Write-Host "  Name: $($module.Name)" -ForegroundColor Gray
+#PS1#     Write-Host "  Version: $($module.Version)" -ForegroundColor Gray
+#PS1#     Write-Host "  Path: $($module.ModuleBase)" -ForegroundColor Gray
+#PS1#     
+#PS1#     exit 0
+#PS1# } catch {
+#PS1#     Write-Host ""
+#PS1#     Write-Host "[ERROR] Installation failed" -ForegroundColor Red
+#PS1#     Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+#PS1#     exit 1
+#PS1# }
