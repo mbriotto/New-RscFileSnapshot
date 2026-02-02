@@ -6,12 +6,15 @@
     This script creates a scheduled task that executes New-RscFileSnapshot.ps1 with configurable parameters.
     The task can be configured to run at PC startup (with delay) and/or at recurring intervals,
     with built-in duplicate prevention to avoid multiple executions within the same interval.
+    
+    When running as SYSTEM account, the script automatically checks and configures RSC authentication
+    if not already present for the SYSTEM user profile.
 
 .NOTES
-    Version:        1.0
+    Version:        1.1
     Author:         Matteo Briotto
     Creation Date:  January 2026
-    Purpose/Change: Initial release - Automated task scheduling for Rubrik snapshots
+    Purpose/Change: Added SYSTEM account authentication verification and auto-configuration
 
 .LINK
     https://github.com/mbriotto/rubrik-scripts
@@ -71,6 +74,11 @@
     **Optional**. Default: SYSTEM.
     Valid values: SYSTEM, CurrentUser, or specific user account.
 
+.PARAMETER ServiceAccountJsonPath
+    Path to the Rubrik Service Account JSON file for SYSTEM account authentication.
+    **Optional**. Only required if running as SYSTEM and credentials are not yet configured.
+    The script will automatically configure authentication for SYSTEM account during task creation.
+
 .PARAMETER Help
     Displays help and exits.
 
@@ -80,6 +88,10 @@
 .EXAMPLE
     .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
     Creates task with default settings: boot execution after 15 min, daily at 2 AM
+
+.EXAMPLE
+    .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -ServiceAccountJsonPath "C:\Creds\rubrik.json"
+    Creates task and configures SYSTEM account authentication using the provided JSON file
 
 .EXAMPLE
     .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -RecurringTime "14:00" -RecurringIntervalHours 12
@@ -106,6 +118,8 @@
       - Windows operating system
       - Administrator privileges (for creating scheduled tasks)
       - New-RscFileSnapshot.ps1 script accessible at specified path
+      - RubrikSecurityCloud module installed with -Scope AllUsers
+      - Service Account JSON file (for initial SYSTEM authentication setup)
 
     Default configuration:
       - Task runs at PC startup with 15-minute delay
@@ -113,13 +127,14 @@
       - Duplicate prevention enabled (won't run at boot if already executed recently)
       - Runs with SYSTEM account privileges
       - Multiple instances are ignored if one is already running
+      - SYSTEM account authentication is automatically configured if needed
 
     Exit codes:
       - Exit 0: successful task creation or help requested
       - Exit 1: error occurred
 
 .VERSION
-    1.0 - Initial release
+    1.1 - Added SYSTEM account authentication verification and auto-configuration
 
 .AUTHOR
     GitHub: https://github.com/mbriotto
@@ -189,6 +204,8 @@ param(
     [ValidateRange(1,365)]
     [int] $LogRetentionDays = 30,
 
+    [string] $ServiceAccountJsonPath,
+
     [Alias('?')]
     [switch] $Help
 )
@@ -211,27 +228,99 @@ function Show-Help {
     Write-Host "  -Recurring schedule is ENABLED by default (daily at 02:00)."
     Write-Host "  -Duplicate prevention is ENABLED by default."
     Write-Host "  -Task runs with SYSTEM account by default."
+    Write-Host "  -SYSTEM account authentication is configured automatically if needed."
     Write-Host ""
-    Write-Host "SCHEDULE OPTIONS:" -ForegroundColor Yellow
-    Write-Host "  -EnableBootExecution Yes|No        Run at PC startup (default: Yes)"
-    Write-Host "  -BootDelayMinutes <1-1440>         Delay after boot (default: 15)"
-    Write-Host "  -EnableRecurringSchedule Yes|No    Recurring execution (default: Yes)"
-    Write-Host "  -RecurringTime <HH:MM>             Execution time (default: 02:00)"
-    Write-Host "  -RecurringIntervalHours <1-168>    Interval in hours (default: 24)"
+    Write-Host "REQUIRED PARAMETERS:" -ForegroundColor Yellow
+    Write-Host "  -SlaName <String>" -ForegroundColor White
+    Write-Host "    Name of the SLA policy to apply" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "SNAPSHOT PARAMETERS (passed to New-RscFileSnapshot.ps1):" -ForegroundColor Yellow
-    Write-Host "  -HostName, -OsType, -FilesetName, -SkipConnectivityCheck"
+    Write-Host "OPTIONAL PARAMETERS:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Script Configuration:" -ForegroundColor Cyan
+    Write-Host "  -ScriptPath <String>" -ForegroundColor White
+    Write-Host "    Path to New-RscFileSnapshot.ps1" -ForegroundColor Gray
+    Write-Host "    Default: Same directory as this script" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  -TaskName <String>" -ForegroundColor White
+    Write-Host "    Name of the scheduled task" -ForegroundColor Gray
+    Write-Host "    Default: 'Rubrik Fileset Backup - Auto'" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  -ServiceAccountJsonPath <String>" -ForegroundColor White
+    Write-Host "    Path to Service Account JSON file for SYSTEM authentication" -ForegroundColor Gray
+    Write-Host "    Required only if running as SYSTEM without existing credentials" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "Snapshot Configuration:" -ForegroundColor Cyan
+    Write-Host "  -HostName <String>" -ForegroundColor White
+    Write-Host "    Target host name (default: local FQDN)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -OsType <Windows|Linux>" -ForegroundColor White
+    Write-Host "    Operating system type (default: Windows)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -FilesetName <String>" -ForegroundColor White
+    Write-Host "    Fileset name, supports wildcards (default: first available)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -SkipConnectivityCheck <Yes|No>" -ForegroundColor White
+    Write-Host "    Skip ping test to Rubrik cluster (default: No)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Boot Execution:" -ForegroundColor Cyan
+    Write-Host "  -EnableBootExecution <Yes|No>" -ForegroundColor White
+    Write-Host "    Run at PC startup (default: Yes)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -BootDelayMinutes <1-1440>" -ForegroundColor White
+    Write-Host "    Delay after boot in minutes (default: 15)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Recurring Schedule:" -ForegroundColor Cyan
+    Write-Host "  -EnableRecurringSchedule <Yes|No>" -ForegroundColor White
+    Write-Host "    Enable recurring execution (default: Yes)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -RecurringTime <HH:MM>" -ForegroundColor White
+    Write-Host "    Time for recurring execution in 24h format (default: 02:00)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -RecurringIntervalHours <1-168>" -ForegroundColor White
+    Write-Host "    Interval in hours (default: 24)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Execution Control:" -ForegroundColor Cyan
+    Write-Host "  -PreventDuplicateExecution <Yes|No>" -ForegroundColor White
+    Write-Host "    Prevent boot execution if already run recently (default: Yes)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -RunAsUser <SYSTEM|CurrentUser>" -ForegroundColor White
+    Write-Host "    Account to run the task as (default: SYSTEM)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Logging:" -ForegroundColor Cyan
+    Write-Host "  -EnableFileLog <Yes|No>" -ForegroundColor White
+    Write-Host "    Enable file logging (default: Yes)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -LogFilePath <String>" -ForegroundColor White
+    Write-Host "    Directory for log files (default: .\Logs)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -LogRetentionDays <1-365>" -ForegroundColor White
+    Write-Host "    Days to retain logs (default: 30)" -ForegroundColor Gray
     Write-Host ""
     Write-Host "EXAMPLES:" -ForegroundColor Yellow
-    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName Gold"
-    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName Gold -RecurringIntervalHours 12"
-    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName Gold -EnableBootExecution No"
-    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName Silver -HostName FILESRV01"
     Write-Host ""
-    Write-Host "TIPS:" -ForegroundColor Yellow
-    Write-Host "  - Run PowerShell as Administrator to create scheduled tasks."
-    Write-Host "  - Task uses execution policy bypass automatically."
-    Write-Host "  - Duplicate prevention avoids boot run if recently executed."
+    Write-Host "  # Basic usage with defaults (first time - requires JSON)" -ForegroundColor Cyan
+    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold' -ServiceAccountJsonPath 'C:\Creds\rubrik.json'" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  # After initial setup (JSON no longer needed)" -ForegroundColor Cyan
+    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold'" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  # Custom recurring schedule" -ForegroundColor Cyan
+    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold' -RecurringTime '14:00' -RecurringIntervalHours 12" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  # Disable boot execution" -ForegroundColor Cyan
+    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold' -EnableBootExecution No" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  # With specific host and fileset" -ForegroundColor Cyan
+    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Silver' -HostName 'FILESRV01' -FilesetName 'UserData'" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  # Run as current user instead of SYSTEM" -ForegroundColor Cyan
+    Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold' -RunAsUser CurrentUser" -ForegroundColor White
+    Write-Host ""
+    Write-Host "MORE INFORMATION:" -ForegroundColor Yellow
+    Write-Host "  Documentation: https://github.com/mbriotto/New-RscFileSnapshot/blob/main/New-RscFileSnapshotScheduler_ps1-README.md"
+    Write-Host "  Issues: https://github.com/mbriotto/New-RscFileSnapshot/issues"
+    Write-Host ""
+    Write-Host "==========================================================" -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -240,430 +329,552 @@ if ($Help) {
     exit 0
 }
 
-# Verify SlaName is required
-if (-not $PSBoundParameters.ContainsKey('SlaName') -or [string]::IsNullOrWhiteSpace($SlaName)) {
-    Write-Host "ERROR: Parameter -SlaName is required." -ForegroundColor Red
+#endregion
+
+#region --- PARAMETER VALIDATION -----------------------------------------------
+
+if ([string]::IsNullOrWhiteSpace($SlaName)) {
+    Write-Host ""
+    Write-Host "[ERROR] -SlaName parameter is required!" -ForegroundColor Red
     Write-Host ""
     Show-Help
     exit 1
 }
 
+if ($EnableBootExecution -eq 'No' -and $EnableRecurringSchedule -eq 'No') {
+    Write-Host ""
+    Write-Host "[ERROR] At least one execution method must be enabled!" -ForegroundColor Red
+    Write-Host "Enable -EnableBootExecution or -EnableRecurringSchedule" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+
 #endregion
 
-#region --- LOGGING SETUP ------------------------------------------------------
+#region --- LOGGING ------------------------------------------------------------
 
-$script:LogFile = $null
 $script:UseFileLog = ($EnableFileLog -eq 'Yes')
-
-function Initialize-Logging {
-    if (-not $script:UseFileLog) {
-        return
-    }
-
-    try {
-        # Create log folder if it doesn't exist
-        if (-not (Test-Path -Path $LogFilePath)) {
-            New-Item -Path $LogFilePath -ItemType Directory -Force | Out-Null
-        }
-
-        # Log file name with timestamp
-        $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-        $logFileName = "New-RscFileSnapshotScheduler_${timestamp}.log"
-        $script:LogFile = Join-Path -Path $LogFilePath -ChildPath $logFileName
-
-        # Write log header
-        $header = @"
-================================================================================
-RUBRIK FILESET SNAPSHOT TASK SCHEDULER - LOG
-================================================================================
-Script started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-Host: $env:COMPUTERNAME
-User: $env:USERNAME
-================================================================================
-
-"@
-        Add-Content -Path $script:LogFile -Value $header -Encoding UTF8
-
-        # Perform cleanup of old logs
-        Cleanup-OldLogs
-
-    } catch {
-        Write-Host "Warning: Could not initialize file logging: $($_.Exception.Message)" -ForegroundColor Yellow
-        Write-Host "Continuing with console logging only..." -ForegroundColor Yellow
-        $script:UseFileLog = $false
-    }
-}
-
-function Cleanup-OldLogs {
-    if (-not $script:UseFileLog) {
-        return
-    }
-
-    try {
-        $cutoffDate = (Get-Date).AddDays(-$LogRetentionDays)
-        $logFiles = Get-ChildItem -Path $LogFilePath -Filter "New-RscFileSnapshotScheduler_*.log" -File -ErrorAction SilentlyContinue
-
-        $deletedCount = 0
-        foreach ($file in $logFiles) {
-            if ($file.LastWriteTime -lt $cutoffDate) {
-                Remove-Item -Path $file.FullName -Force
-                $deletedCount++
-            }
-        }
-
-        if ($deletedCount -gt 0) {
-            Write-Log -Message "Log cleanup: deleted $deletedCount files older than $LogRetentionDays days" -Level Info
-        }
-    } catch {
-        # Silent error
-    }
-}
+$script:LogFile = $null
 
 function Write-Log {
     param(
-        [Parameter(Mandatory)]
-        [string] $Message,
-        [ValidateSet('Info','Warning','Error','Success')]
-        [string] $Level = 'Info'
+        [string]$Message,
+        [ValidateSet('Info','Success','Warning','Error')]
+        [string]$Level = 'Info'
     )
     
-    # Timestamp for log
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $logMessage = "[$timestamp] [$Level] $Message"
+    if (-not $script:UseFileLog -or -not $script:LogFile) { return }
     
-    # File output (if enabled)
-    if ($script:UseFileLog -and $script:LogFile) {
-        try {
-            Add-Content -Path $script:LogFile -Value $logMessage -Encoding UTF8
-        } catch {
-            # Silent error
-        }
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $logEntry = "[$timestamp] [$Level] $Message"
+    
+    try {
+        Add-Content -Path $script:LogFile -Value $logEntry -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        Write-Warning "Unable to write to log file: $($_.Exception.Message)"
     }
 }
-
-# Initialize logging system
-Initialize-Logging
-
-#endregion
-
-#region --- FUNCTIONS ----------------------------------------------------------
 
 function Write-ColorOutput {
     param(
-        [Parameter(Mandatory)]
-        [string] $Message,
+        [string]$Message,
         [ValidateSet('Info','Success','Warning','Error')]
-        [string] $Level = 'Info'
+        [string]$Level = 'Info'
     )
     
-    switch ($Level) {
-        'Info'    { Write-Host $Message -ForegroundColor Cyan }
-        'Success' { Write-Host $Message -ForegroundColor Green }
-        'Warning' { Write-Host $Message -ForegroundColor Yellow }
-        'Error'   { Write-Host $Message -ForegroundColor Red }
+    $colors = @{
+        'Info' = 'Cyan'
+        'Success' = 'Green'
+        'Warning' = 'Yellow'
+        'Error' = 'Red'
     }
     
-    # Also write to log file
+    $prefix = switch ($Level) {
+        'Info' { '[i]' }
+        'Success' { '[+]' }
+        'Warning' { '[!]' }
+        'Error' { '[x]' }
+    }
+    
+    Write-Host "$prefix $Message" -ForegroundColor $colors[$Level]
     Write-Log -Message $Message -Level $Level
 }
 
-#endregion
+if ($script:UseFileLog) {
+    try {
+        if (-not (Test-Path $LogFilePath)) {
+            New-Item -Path $LogFilePath -ItemType Directory -Force | Out-Null
+        }
+        
+        $logFileName = "New-RscFileSnapshotScheduler_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+        $script:LogFile = Join-Path $LogFilePath $logFileName
+        
+        $header = @"
+================================================================================
+Rubrik Fileset Snapshot Task Scheduler Log
+Script: New-RscFileSnapshotScheduler.ps1
+Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+================================================================================
 
-#region --- VALIDATION ---------------------------------------------------------
-
-Write-Host ""
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host " RUBRIK FILESET SNAPSHOT TASK SCHEDULER" -ForegroundColor Yellow
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host ""
-
-# Check if running as Administrator
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-ColorOutput "ERROR: This script requires Administrator privileges to create scheduled tasks." -Level Error
-    Write-ColorOutput "Please run PowerShell as Administrator and try again." -Level Warning
-    exit 1
-}
-
-Write-ColorOutput "[+] Running with Administrator privileges" -Level Success
-
-# Determine script path
-if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
-    $scriptDir = $PSScriptRoot
-    if ([string]::IsNullOrWhiteSpace($scriptDir)) {
-        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+"@
+        Set-Content -Path $script:LogFile -Value $header -Encoding UTF8
+        
+        if ($LogRetentionDays -gt 0) {
+            $cutoffDate = (Get-Date).AddDays(-$LogRetentionDays)
+            Get-ChildItem -Path $LogFilePath -Filter "New-RscFileSnapshotScheduler_*.log" | 
+                Where-Object { $_.LastWriteTime -lt $cutoffDate } | 
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+        
+    } catch {
+        Write-Warning "Unable to initialize log file: $($_.Exception.Message)"
+        $script:UseFileLog = $false
+        $script:LogFile = $null
     }
-    $ScriptPath = Join-Path $scriptDir "New-RscFileSnapshot.ps1"
-    Write-ColorOutput "ScriptPath not specified, using default: $ScriptPath" -Level Info
-}
-
-# Validate script exists
-if (-not (Test-Path -Path $ScriptPath)) {
-    Write-ColorOutput "ERROR: New-RscFileSnapshot.ps1 not found at: $ScriptPath" -Level Error
-    Write-ColorOutput "Please specify the correct path using -ScriptPath parameter." -Level Warning
-    exit 1
-}
-
-Write-ColorOutput "[+] Found New-RscFileSnapshot.ps1 at: $ScriptPath" -Level Success
-
-# Validate at least one execution method is enabled
-if ($EnableBootExecution -eq 'No' -and $EnableRecurringSchedule -eq 'No') {
-    Write-ColorOutput "ERROR: At least one execution method must be enabled." -Level Error
-    Write-ColorOutput "Set either -EnableBootExecution Yes or -EnableRecurringSchedule Yes" -Level Warning
-    exit 1
 }
 
 #endregion
 
-#region --- BUILD COMMAND ARGUMENTS --------------------------------------------
+#region --- BANNER -------------------------------------------------------------
 
 Write-Host ""
-Write-ColorOutput "Building command arguments..." -Level Info
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host " RUBRIK FILESET SNAPSHOT - TASK SCHEDULER " -ForegroundColor Yellow
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Version: 1.1" -ForegroundColor Gray
+Write-Host "Author: Matteo Briotto" -ForegroundColor Gray
+Write-Host "License: GPL-3.0" -ForegroundColor Gray
+Write-Host ""
+Write-Host "This script creates a Windows Scheduled Task to automate" -ForegroundColor White
+Write-Host "Rubrik Fileset snapshots with customizable scheduling." -ForegroundColor White
+Write-Host ""
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host ""
 
-# Build arguments for New-RscFileSnapshot.ps1
-$arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$ScriptPath`"", "-SlaName", "`"$SlaName`"")
+Write-Log -Message "Script execution started" -Level Info
+Write-Log -Message "SLA Name: $SlaName" -Level Info
+
+#endregion
+
+#region --- ADMINISTRATOR CHECK ------------------------------------------------
+
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    Write-ColorOutput "Administrator privileges required to create scheduled tasks!" -Level Error
+    Write-Host ""
+    Write-Host "Please run this script as Administrator:" -ForegroundColor Yellow
+    Write-Host "  1. Right-click PowerShell" -ForegroundColor Gray
+    Write-Host "  2. Select 'Run as Administrator'" -ForegroundColor Gray
+    Write-Host ""
+    Write-Log -Message "Script requires administrator privileges" -Level Error
+    exit 1
+}
+
+Write-ColorOutput "Running with Administrator privileges" -Level Success
+Write-Log -Message "Administrator check passed" -Level Success
+
+#endregion
+
+#region --- SCRIPT PATH VALIDATION ---------------------------------------------
+
+Write-Host ""
+Write-ColorOutput "Validating script configuration..." -Level Info
+Write-Host ""
+
+if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
+    $ScriptPath = Join-Path $PSScriptRoot "New-RscFileSnapshot.ps1"
+    Write-ColorOutput "Using default script path: $ScriptPath" -Level Info
+    Write-Log -Message "Using default script path: $ScriptPath" -Level Info
+} else {
+    $ScriptPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ScriptPath)
+    Write-ColorOutput "Using specified script path: $ScriptPath" -Level Info
+    Write-Log -Message "Using custom script path: $ScriptPath" -Level Info
+}
+
+if (-not (Test-Path $ScriptPath)) {
+    Write-ColorOutput "Script not found: $ScriptPath" -Level Error
+    Write-Host ""
+    Write-Host "Please ensure New-RscFileSnapshot.ps1 exists at the specified location" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Log -Message "Script not found at: $ScriptPath" -Level Error
+    exit 1
+}
+
+Write-ColorOutput "Script found and validated" -Level Success
+Write-Log -Message "Script validated: $ScriptPath" -Level Success
+
+#endregion
+
+#region --- SYSTEM AUTHENTICATION CHECK ----------------------------------------
+
+Write-Host ""
+Write-ColorOutput "Checking authentication configuration..." -Level Info
+Write-Host ""
+
+# Function to check if RSC is authenticated for a specific user context
+function Test-RscAuthentication {
+    param([string]$UserContext = "Current")
+    
+    try {
+        $testScript = {
+            try {
+                Import-Module RubrikSecurityCloud -ErrorAction Stop
+                Connect-Rsc -ErrorAction Stop
+                $cluster = Get-RscCluster -ErrorAction Stop
+                Disconnect-Rsc -ErrorAction SilentlyContinue
+                return $true
+            } catch {
+                return $false
+            }
+        }
+        
+        if ($UserContext -eq "SYSTEM") {
+            # Test as SYSTEM using a scheduled task
+            $testTaskName = "RSC-Auth-Test-$(Get-Random)"
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$($testScript.ToString())`""
+            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+            $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+            
+            Register-ScheduledTask -TaskName $testTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+            Start-ScheduledTask -TaskName $testTaskName
+            Start-Sleep -Seconds 10
+            
+            $taskInfo = Get-ScheduledTaskInfo -TaskName $testTaskName
+            $result = ($taskInfo.LastTaskResult -eq 0)
+            
+            Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false
+            return $result
+        } else {
+            return & $testScript
+        }
+    } catch {
+        return $false
+    }
+}
+
+# Function to configure RSC authentication for SYSTEM account
+function Set-SystemAuthentication {
+    param([string]$JsonPath)
+    
+    Write-ColorOutput "Configuring authentication for SYSTEM account..." -Level Info
+    Write-Log -Message "Configuring SYSTEM authentication from: $JsonPath" -Level Info
+    
+    try {
+        # Create a temporary script to run as SYSTEM
+        $tempScript = Join-Path $env:TEMP "setup-rsc-system-$( Get-Random).ps1"
+        $setupScript = @"
+Import-Module RubrikSecurityCloud -Force
+Set-RscServiceAccountFile -InputFilePath '$JsonPath'
+Connect-Rsc
+Disconnect-Rsc
+"@
+        Set-Content -Path $tempScript -Value $setupScript -Force
+        
+        # Create and run a temporary scheduled task as SYSTEM
+        $setupTaskName = "RSC-Setup-SYSTEM-$(Get-Random)"
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(5)
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        
+        Register-ScheduledTask -TaskName $setupTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $setupTaskName
+        
+        # Wait for task completion
+        $timeout = 60
+        $elapsed = 0
+        do {
+            Start-Sleep -Seconds 2
+            $elapsed += 2
+            $taskState = (Get-ScheduledTask -TaskName $setupTaskName).State
+        } while ($taskState -eq 'Running' -and $elapsed -lt $timeout)
+        
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $setupTaskName
+        $success = ($taskInfo.LastTaskResult -eq 0)
+        
+        # Cleanup
+        Unregister-ScheduledTask -TaskName $setupTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Path $tempScript -Force -ErrorAction SilentlyContinue
+        
+        if ($success) {
+            Write-ColorOutput "SYSTEM account authentication configured successfully" -Level Success
+            Write-Log -Message "SYSTEM authentication configured successfully" -Level Success
+            return $true
+        } else {
+            Write-ColorOutput "Failed to configure SYSTEM account authentication (Exit Code: $($taskInfo.LastTaskResult))" -Level Error
+            Write-Log -Message "SYSTEM authentication configuration failed: Exit Code $($taskInfo.LastTaskResult)" -Level Error
+            return $false
+        }
+        
+    } catch {
+        Write-ColorOutput "Error configuring SYSTEM authentication: $($_.Exception.Message)" -Level Error
+        Write-Log -Message "SYSTEM authentication error: $($_.Exception.Message)" -Level Error
+        return $false
+    }
+}
+
+# Check authentication based on RunAsUser parameter
+if ($RunAsUser -eq 'SYSTEM') {
+    Write-ColorOutput "Task will run as SYSTEM account - verifying authentication..." -Level Info
+    Write-Log -Message "Checking SYSTEM account authentication" -Level Info
+    
+    $systemAuthOk = Test-RscAuthentication -UserContext "SYSTEM"
+    
+    if ($systemAuthOk) {
+        Write-ColorOutput "SYSTEM account is already authenticated" -Level Success
+        Write-Log -Message "SYSTEM account authentication verified" -Level Success
+    } else {
+        Write-ColorOutput "SYSTEM account is not authenticated - configuration required" -Level Warning
+        Write-Log -Message "SYSTEM account requires authentication" -Level Warning
+        
+        # Look for JSON file
+        $jsonFile = $null
+        
+        if (-not [string]::IsNullOrWhiteSpace($ServiceAccountJsonPath) -and (Test-Path $ServiceAccountJsonPath)) {
+            $jsonFile = $ServiceAccountJsonPath
+        } else {
+            # Search for JSON file in script directory
+            $jsonFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.json" | Where-Object { $_.Name -match "service.*account" }
+            if ($jsonFiles.Count -gt 0) {
+                $jsonFile = $jsonFiles[0].FullName
+                Write-ColorOutput "Found Service Account JSON: $($jsonFiles[0].Name)" -Level Info
+            }
+        }
+        
+        if ($jsonFile) {
+            Write-Host ""
+            Write-ColorOutput "Attempting to configure SYSTEM account authentication..." -Level Info
+            Write-Host "  JSON File: $jsonFile" -ForegroundColor Gray
+            Write-Host ""
+            
+            $configured = Set-SystemAuthentication -JsonPath $jsonFile
+            
+            if (-not $configured) {
+                Write-Host ""
+                Write-ColorOutput "Failed to configure SYSTEM account authentication" -Level Error
+                Write-Host ""
+                Write-Host "Please configure authentication manually:" -ForegroundColor Yellow
+                Write-Host "  1. Run PowerShell as SYSTEM using PsExec:" -ForegroundColor Gray
+                Write-Host "     PsExec.exe -i -s powershell.exe" -ForegroundColor White
+                Write-Host "  2. In the SYSTEM PowerShell session, run:" -ForegroundColor Gray
+                Write-Host "     Import-Module RubrikSecurityCloud" -ForegroundColor White
+                Write-Host "     Set-RscServiceAccountFile -InputFilePath '$jsonFile'" -ForegroundColor White
+                Write-Host "  3. Re-run this scheduler script" -ForegroundColor Gray
+                Write-Host ""
+                Write-Log -Message "SYSTEM authentication configuration failed - manual intervention required" -Level Error
+                exit 1
+            }
+            
+            # Verify authentication after configuration
+            Write-ColorOutput "Verifying SYSTEM authentication configuration..." -Level Info
+            Start-Sleep -Seconds 3
+            
+            $systemAuthOk = Test-RscAuthentication -UserContext "SYSTEM"
+            if (-not $systemAuthOk) {
+                Write-ColorOutput "SYSTEM authentication verification failed" -Level Error
+                Write-Log -Message "SYSTEM authentication verification failed after configuration" -Level Error
+                exit 1
+            }
+            
+            Write-ColorOutput "SYSTEM authentication verified successfully" -Level Success
+            Write-Log -Message "SYSTEM authentication verified after configuration" -Level Success
+            
+        } else {
+            Write-Host ""
+            Write-ColorOutput "Service Account JSON file not found" -Level Error
+            Write-Host ""
+            Write-Host "To configure SYSTEM account authentication, you need:" -ForegroundColor Yellow
+            Write-Host "  1. Download Service Account JSON from Rubrik Security Cloud" -ForegroundColor Gray
+            Write-Host "  2. Provide the JSON file path using -ServiceAccountJsonPath parameter" -ForegroundColor Gray
+            Write-Host "     OR place the JSON file in the script directory" -ForegroundColor Gray
+            Write-Host ""
+            Write-Host "Example:" -ForegroundColor Cyan
+            Write-Host "  .\New-RscFileSnapshotScheduler.ps1 -SlaName 'Gold' -ServiceAccountJsonPath 'C:\Creds\rubrik.json'" -ForegroundColor White
+            Write-Host ""
+            Write-Log -Message "Service Account JSON file not found - cannot configure SYSTEM authentication" -Level Error
+            exit 1
+        }
+    }
+} else {
+    Write-ColorOutput "Task will run as current user - checking authentication..." -Level Info
+    Write-Log -Message "Checking current user authentication" -Level Info
+    
+    $currentAuthOk = Test-RscAuthentication -UserContext "Current"
+    
+    if (-not $currentAuthOk) {
+        Write-ColorOutput "Current user is not authenticated" -Level Error
+        Write-Host ""
+        Write-Host "Please configure authentication first:" -ForegroundColor Yellow
+        Write-Host "  .\New-RscFileSnapshot.ps1 -SlaName '$SlaName'" -ForegroundColor White
+        Write-Host ""
+        Write-Log -Message "Current user authentication check failed" -Level Error
+        exit 1
+    }
+    
+    Write-ColorOutput "Current user authentication verified" -Level Success
+    Write-Log -Message "Current user authentication verified" -Level Success
+}
+
+#endregion
+
+#region --- BUILD COMMAND ------------------------------------------------------
+
+Write-Host ""
+Write-ColorOutput "Building scheduled task command..." -Level Info
+Write-Host ""
+
+$arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -SlaName `"$SlaName`""
 
 if ($PSBoundParameters.ContainsKey('HostName') -and -not [string]::IsNullOrWhiteSpace($HostName)) {
-    $arguments += "-HostName"
-    $arguments += "`"$HostName`""
+    $arguments += " -HostName `"$HostName`""
+    Write-Log -Message "Parameter: HostName = $HostName" -Level Info
 }
 
 if ($PSBoundParameters.ContainsKey('OsType')) {
-    $arguments += "-OsType"
-    $arguments += $OsType
+    $arguments += " -OsType $OsType"
+    Write-Log -Message "Parameter: OsType = $OsType" -Level Info
 }
 
 if ($PSBoundParameters.ContainsKey('FilesetName') -and -not [string]::IsNullOrWhiteSpace($FilesetName)) {
-    $arguments += "-FilesetName"
-    $arguments += "`"$FilesetName`""
+    $arguments += " -FilesetName `"$FilesetName`""
+    Write-Log -Message "Parameter: FilesetName = $FilesetName" -Level Info
 }
 
 if ($PSBoundParameters.ContainsKey('SkipConnectivityCheck')) {
-    $arguments += "-SkipConnectivityCheck"
-    $arguments += $SkipConnectivityCheck
+    $arguments += " -SkipConnectivityCheck $SkipConnectivityCheck"
+    Write-Log -Message "Parameter: SkipConnectivityCheck = $SkipConnectivityCheck" -Level Info
 }
 
-# ALWAYS enable file logging for scheduled tasks
-$arguments += "-EnableFileLog"
-$arguments += "Yes"
-
-# Use the same log path for both scheduler and snapshot script
-$arguments += "-LogFilePath"
-$arguments += "`"$LogFilePath`""
-
-# Use the same retention for both
-$arguments += "-LogRetentionDays"
-$arguments += $LogRetentionDays
-
-$argumentString = $arguments -join " "
-Write-ColorOutput "Command: PowerShell.exe $argumentString" -Level Info
-
-#endregion
-
-#region --- SERVICE ACCOUNT CHECK ----------------------------------------------
-
-Write-Host ""
-Write-Host "==========================================================" -ForegroundColor Yellow
-Write-Host " IMPORTANT: SERVICE ACCOUNT CONFIGURATION" -ForegroundColor Cyan
-Write-Host "==========================================================" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "The scheduled task will run under SYSTEM account context." -ForegroundColor White
-Write-Host ""
-Write-Host "FOR FIRST-TIME EXECUTION:" -ForegroundColor Yellow
-Write-Host "  1. Place the Service Account JSON file in:" -ForegroundColor White
-$scriptDir = Split-Path $ScriptPath -Parent
-Write-Host "     $scriptDir" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  2. When the scheduled task runs for the FIRST time:" -ForegroundColor White
-Write-Host "     - New-RscFileSnapshot.ps1 detects the JSON file" -ForegroundColor Gray
-Write-Host "     - Configures credentials under SYSTEM account profile" -ForegroundColor Gray
-Write-Host "     - Deletes the JSON file automatically (security)" -ForegroundColor Gray
-Write-Host ""
-Write-Host "FOR SUBSEQUENT EXECUTIONS:" -ForegroundColor Yellow
-Write-Host "  - No JSON file needed" -ForegroundColor White
-Write-Host "  - Task uses existing SYSTEM account credentials" -ForegroundColor White
-Write-Host ""
-
-# Check for JSON file
-$jsonFiles = @(Get-ChildItem -Path $scriptDir -Filter "*.json" -File -ErrorAction SilentlyContinue)
-
-if ($jsonFiles.Count -gt 0) {
-    Write-Host "STATUS: Service Account JSON file(s) found:" -ForegroundColor Green
-    foreach ($file in $jsonFiles) {
-        Write-Host "  [+] $($file.Name)" -ForegroundColor Green
-    }
-    Write-Host ""
-    Write-Host "Ready for FIRST-TIME execution." -ForegroundColor Green
-    Write-Log -Message "JSON files found: $($jsonFiles.Count)" -Level Info
-} else {
-    Write-Host "STATUS: No Service Account JSON file found." -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Assuming SYSTEM account credentials are already configured." -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "If the task fails on first run, you need to:" -ForegroundColor Yellow
-    Write-Host "  1. Place Service Account JSON in: $scriptDir" -ForegroundColor White
-    Write-Host "  2. Run the task again (it will auto-configure)" -ForegroundColor White
-    Write-Host ""
-    Write-Log -Message "No JSON files found - assuming credentials configured" -Level Warning
-}
-
-Write-Host "==========================================================" -ForegroundColor Yellow
-Write-Host ""
-
-Write-Host "Press any key to continue with task creation..." -ForegroundColor Cyan
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-Write-Host ""
+Write-ColorOutput "Command configured successfully" -Level Success
+Write-Log -Message "Task command: powershell.exe $arguments" -Level Info
 
 #endregion
 
 #region --- CREATE SCHEDULED TASK ----------------------------------------------
 
 Write-Host ""
-Write-ColorOutput "Creating scheduled task: $TaskName" -Level Info
+Write-ColorOutput "Creating scheduled task..." -Level Info
+Write-Host ""
+Write-Log -Message "Creating task: $TaskName" -Level Info
 
 try {
-    # Check if task already exists and remove it completely
-    $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($existingTask) {
-        Write-ColorOutput "Task '$TaskName' already exists. Removing old task..." -Level Warning
-        try {
-            # Stop the task if running
-            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            # Unregister the task
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
-            Start-Sleep -Seconds 1
-            Write-ColorOutput "Old task removed successfully." -Level Success
-        } catch {
-            Write-ColorOutput "Warning: Could not remove old task cleanly: $($_.Exception.Message)" -Level Warning
-            Write-ColorOutput "Attempting to continue anyway..." -Level Info
-        }
-    }
-
-    # Create action
-    $action = New-ScheduledTaskAction -Execute "PowerShell.exe" `
-        -Argument $argumentString `
-        -WorkingDirectory (Split-Path $ScriptPath -Parent)
-
-    Write-ColorOutput "[+] Task action created" -Level Success
-
-    # Create triggers
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
+    
     $triggers = @()
-
-    # Boot trigger (simple, without delay - will be configured later via COM)
+    
     if ($EnableBootExecution -eq 'Yes') {
-        $triggerBoot = New-ScheduledTaskTrigger -AtStartup
-        $triggers += $triggerBoot
-        Write-ColorOutput "[+] Boot trigger added (delay will be configured)" -Level Success
+        $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+        
+        if ($PreventDuplicateExecution -eq 'Yes') {
+            $bootTrigger.Repetition = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours $RecurringIntervalHours) | Select-Object -ExpandProperty Repetition
+            $bootTrigger.Delay = "PT$($BootDelayMinutes)M"
+        } else {
+            $bootTrigger.Delay = "PT$($BootDelayMinutes)M"
+            $bootTrigger.Repetition = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours $RecurringIntervalHours) -RepetitionDuration ([TimeSpan]::MaxValue) | Select-Object -ExpandProperty Repetition
+        }
+        
+        $triggers += $bootTrigger
+        Write-ColorOutput "Boot trigger configured: $BootDelayMinutes minutes delay" -Level Success
+        Write-Log -Message "Boot trigger: Delay=$BootDelayMinutes min, PreventDuplicate=$PreventDuplicateExecution" -Level Info
     }
-
-    # Recurring trigger
+    
     if ($EnableRecurringSchedule -eq 'Yes') {
-        $triggerRecurring = New-ScheduledTaskTrigger -Daily -At $RecurringTime
-        $triggers += $triggerRecurring
-        Write-ColorOutput "[+] Recurring trigger added (time: $RecurringTime)" -Level Success
+        $timeParts = $RecurringTime -split ':'
+        $scheduleTime = Get-Date -Hour $timeParts[0] -Minute $timeParts[1] -Second 0
+        
+        $recurringTrigger = New-ScheduledTaskTrigger -Daily -At $scheduleTime
+        
+        if ($RecurringIntervalHours -lt 24) {
+            $recurringTrigger.Repetition = New-ScheduledTaskTrigger -Once -At $scheduleTime -RepetitionInterval (New-TimeSpan -Hours $RecurringIntervalHours) -RepetitionDuration ([TimeSpan]::MaxValue) | Select-Object -ExpandProperty Repetition
+        }
+        
+        $triggers += $recurringTrigger
+        Write-ColorOutput "Recurring trigger configured: Daily at $RecurringTime" -Level Success
+        Write-Log -Message "Recurring trigger: Time=$RecurringTime, Interval=$RecurringIntervalHours hours" -Level Info
     }
-
-    # Create settings
+    
+    if ($RunAsUser -eq 'SYSTEM') {
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        Write-Log -Message "Principal: SYSTEM account" -Level Info
+    } else {
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
+        Write-Log -Message "Principal: $currentUser" -Level Info
+    }
+    
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
         -RunOnlyIfNetworkAvailable `
-        -DontStopOnIdleEnd `
-        -RestartCount 3 `
-        -RestartInterval (New-TimeSpan -Minutes 10) `
-        -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
-        -MultipleInstances IgnoreNew
-
-    Write-ColorOutput "[+] Task settings configured" -Level Success
-
-    # Create principal
-    if ($RunAsUser -eq 'SYSTEM') {
-        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-        Write-ColorOutput "[+] Task will run as: SYSTEM" -Level Success
-    } else {
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
-        Write-ColorOutput "[+] Task will run as: $currentUser" -Level Success
-    }
-
-    # Register task
-    $task = Register-ScheduledTask `
+        -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    
+    Write-ColorOutput "Task settings configured" -Level Success
+    Write-Log -Message "Task settings: AllowBattery, NetworkRequired, IgnoreNew, Timeout=2h" -Level Info
+    
+    Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
         -Trigger $triggers `
-        -Settings $settings `
         -Principal $principal `
-        -Description "Automated Rubrik Fileset snapshot using New-RscFileSnapshot.ps1"
-
-    Write-ColorOutput "[+] Scheduled task registered successfully" -Level Success
-
-    # Configure boot trigger with delay and repetition using COM (if boot execution enabled)
-    if ($EnableBootExecution -eq 'Yes') {
+        -Settings $settings `
+        -Description "Automated Rubrik Fileset snapshot for $SlaName SLA" `
+        -Force | Out-Null
+    
+    Write-ColorOutput "Scheduled task created successfully" -Level Success
+    Write-Log -Message "Task registered: $TaskName" -Level Success
+    
+    if ($EnableBootExecution -eq 'Yes' -and $BootDelayMinutes -gt 0) {
         Write-Host ""
-        Write-ColorOutput "Configuring advanced trigger settings..." -Level Info
+        Write-ColorOutput "Applying boot delay configuration..." -Level Info
         
         try {
-            $taskService = New-Object -ComObject Schedule.Service
-            $taskService.Connect()
-            $taskFolder = $taskService.GetFolder("\")
-            $task = $taskFolder.GetTask($TaskName)
-            $taskDefinition = $task.Definition
-
-            # Find boot trigger (it's the first one if enabled)
-            $bootTriggerIndex = 1
-            $bootTrigger = $taskDefinition.Triggers.Item($bootTriggerIndex)
+            $service = New-Object -ComObject Schedule.Service
+            $service.Connect()
             
-            # Set delay
-            $bootTrigger.Delay = "PT$($BootDelayMinutes)M"
-            Write-ColorOutput "[+] Boot delay set to $BootDelayMinutes minutes" -Level Success
+            $taskFolder = $service.GetFolder("\")
+            $taskDefinition = $taskFolder.GetTask($TaskName).Definition
             
-            # Set repetition interval if duplicate prevention is disabled
-            if ($PreventDuplicateExecution -eq 'No') {
-                $bootTrigger.Repetition.Interval = "PT$($RecurringIntervalHours)H"
-                $bootTrigger.Repetition.Duration = ""
-                $bootTrigger.Repetition.StopAtDurationEnd = $false
-                Write-ColorOutput "[+] Boot trigger will repeat every $RecurringIntervalHours hours" -Level Success
-            } else {
-                # If duplicate prevention is enabled, don't set repetition on boot trigger
-                # The recurring trigger will handle regular executions
-                Write-ColorOutput "[+] Duplicate prevention enabled (boot won't repeat)" -Level Success
-            }
-
-            # Configure recurring trigger repetition if enabled
-            if ($EnableRecurringSchedule -eq 'Yes') {
-                $recurringTriggerIndex = if ($EnableBootExecution -eq 'Yes') { 2 } else { 1 }
-                $recurringTrigger = $taskDefinition.Triggers.Item($recurringTriggerIndex)
-                
-                if ($RecurringIntervalHours -lt 24) {
-                    $recurringTrigger.Repetition.Interval = "PT$($RecurringIntervalHours)H"
-                    $recurringTrigger.Repetition.Duration = "P1D"  # Repeat for 1 day
-                    $recurringTrigger.Repetition.StopAtDurationEnd = $false
-                    Write-ColorOutput "[+] Recurring trigger will repeat every $RecurringIntervalHours hours" -Level Success
+            for ($i = 0; $i -lt $taskDefinition.Triggers.Count; $i++) {
+                $trigger = $taskDefinition.Triggers.Item($i + 1)
+                if ($trigger.Type -eq 8) {
+                    $trigger.Delay = "PT$($BootDelayMinutes)M"
+                    
+                    if ($PreventDuplicateExecution -eq 'Yes') {
+                        $trigger.Repetition.Interval = "PT$($RecurringIntervalHours)H"
+                        $trigger.Repetition.Duration = ""
+                        $trigger.Repetition.StopAtDurationEnd = $false
+                    }
                 }
             }
-
-            # Save the modified task
+            
             $taskFolder.RegisterTaskDefinition(
                 $TaskName,
                 $taskDefinition,
-                6,  # TASK_CREATE_OR_UPDATE
+                6,
                 $principal.UserId,
                 $null,
                 $principal.LogonType
             ) | Out-Null
-
-            Write-ColorOutput "[+] Advanced trigger configuration completed" -Level Success
+            
+            Write-ColorOutput "Advanced trigger configuration completed" -Level Success
+            Write-Log -Message "Boot delay applied: $BootDelayMinutes minutes" -Level Success
             
         } catch {
             Write-ColorOutput "Warning: Could not configure advanced trigger settings: $($_.Exception.Message)" -Level Warning
             Write-ColorOutput "Task created but boot delay may need manual configuration in Task Scheduler" -Level Warning
+            Write-Log -Message "Warning: Advanced trigger configuration failed: $($_.Exception.Message)" -Level Warning
         }
     }
-
+    
 } catch {
     Write-ColorOutput "ERROR creating scheduled task: $($_.Exception.Message)" -Level Error
+    Write-Log -Message "Task creation failed: $($_.Exception.Message)" -Level Error
     exit 1
 }
 
@@ -725,7 +936,7 @@ Write-Host ""
 
 Write-Host "Run As:" -ForegroundColor Cyan
 if ($RunAsUser -eq 'SYSTEM') {
-    Write-Host "  SYSTEM account" -ForegroundColor White
+    Write-Host "  SYSTEM account (authenticated)" -ForegroundColor White
 } else {
     Write-Host "  $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)" -ForegroundColor White
 }
@@ -763,6 +974,8 @@ Write-Host ""
 
 Write-ColorOutput "Task created successfully! The backup will run according to the configured schedule." -Level Success
 Write-Host ""
+
+Write-Log -Message "Task configuration completed successfully" -Level Success
 
 #endregion
 

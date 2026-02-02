@@ -9,6 +9,8 @@ PowerShell script for creating Windows Scheduled Tasks to automate Rubrik Filese
 
 `New-RscFileSnapshotScheduler.ps1` automates the creation of Windows Scheduled Tasks that execute `New-RscFileSnapshot.ps1` at configurable intervals. The script supports boot-time execution with delays, recurring schedules, and intelligent duplicate prevention.
 
+**NEW in v1.1**: Automatic SYSTEM account authentication verification and configuration!
+
 ### Key Features
 
 - ✅ **Boot Execution**: Automatically runs snapshots after PC startup (configurable delay)
@@ -19,6 +21,7 @@ PowerShell script for creating Windows Scheduled Tasks to automate Rubrik Filese
 - ✅ **Multiple Instances Protection**: Prevents overlapping executions
 - ✅ **Comprehensive Validation**: Checks permissions, paths, and configuration
 - ✅ **Administrator Privileges Check**: Ensures proper permissions before task creation
+- ✅ **Automatic SYSTEM Authentication**: Verifies and configures RSC authentication for SYSTEM account
 
 ---
 
@@ -70,9 +73,11 @@ Get-Module -ListAvailable RubrikSecurityCloud
 
 You need to configure Rubrik Service Account credentials before running the scheduler.
 
-**Important**: Service Account credentials must be configured BEFORE creating scheduled tasks.
+**Important**: Service Account credentials must be configured for the SYSTEM account when using default task settings.
 
-#### How to configure:
+#### Automatic Configuration (Recommended - NEW in v1.1)
+
+The scheduler script now **automatically handles SYSTEM account authentication**:
 
 1. **Create Service Account in Rubrik**
    - Use [New-RscServiceAccount.ps1](New-RscServiceAccount.ps1-README.md) for guided creation
@@ -81,13 +86,47 @@ You need to configure Rubrik Service Account credentials before running the sche
 2. **Download JSON credentials**
    - Download the Service Account JSON file from Rubrik Security Cloud
 
-3. **Configure credentials**
-   - Place JSON file in the script directory
-   - Run `New-RscFileSnapshot.ps1 -SlaName 'Gold'` once
-   - This will automatically configure encrypted credentials and delete the JSON file
+3. **Run the scheduler with JSON path**
+   ```powershell
+   # The script will automatically configure SYSTEM authentication
+   .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -ServiceAccountJsonPath "C:\Creds\rubrik.json"
+   ```
+   
+   OR place the JSON file in the script directory:
+   ```powershell
+   # Script will auto-detect JSON file and configure authentication
+   Copy-Item "C:\Downloads\service-account-*.json" $PSScriptRoot
+   .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
+   ```
 
-4. **Verify configuration**
-   - Run `Check-RscServiceAccountStatus.ps1` to verify credentials exist
+**What happens automatically**:
+- Script verifies if SYSTEM account is authenticated
+- If not authenticated, automatically configures it using the provided JSON
+- Verifies authentication after configuration
+- Creates the scheduled task only after successful authentication
+- Task execution will work immediately without manual intervention
+
+#### Manual Configuration (Legacy Method)
+
+If you prefer to configure authentication manually or if automatic configuration fails:
+
+```powershell
+# 1. Run PowerShell as SYSTEM using PsExec
+PsExec.exe -i -s powershell.exe
+
+# 2. In the SYSTEM PowerShell session, configure authentication
+Import-Module RubrikSecurityCloud
+Set-RscServiceAccountFile -InputFilePath "C:\Path\To\service-account.json"
+
+# 3. Test the connection
+Connect-Rsc
+Get-RscCluster
+Disconnect-Rsc
+
+# 4. Exit SYSTEM session and run the scheduler as your regular admin user
+exit
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
+```
 
 **See also:** [New-RscServiceAccount.ps1](New-RscServiceAccount.ps1-README.md) for guided Service Account creation.
 
@@ -155,42 +194,52 @@ Copy-Item "C:\Downloads\service-account-*.json" "."
 .\New-RscFileSnapshotScheduler.ps1
 ```
 
-### Default Configuration (Recommended)
+### Default Configuration (Recommended) - NEW Simplified Process
 
 ```powershell
-# 1. Ensure Service Account credentials are configured
-#    (Run New-RscFileSnapshot.ps1 once to configure if not already done)
+# 1. Run PowerShell as Administrator
 
-# 2. Run PowerShell as Administrator
+# 2. First time setup - provide Service Account JSON:
+.\New-RscFileSnapshotScheduler.ps1 `
+    -SlaName "Gold" `
+    -ServiceAccountJsonPath "C:\Downloads\service-account-rsc123.json"
 
-# 3. Execute scheduler:
+# OR simply place JSON in script directory and run:
+Copy-Item "C:\Downloads\service-account-*.json" .
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
-**What happens:**
+**What happens automatically:**
 1. ✅ Verifies script path and SLA parameter
-2. ✅ Creates scheduled task with:
+2. ✅ Checks SYSTEM account authentication status
+3. ✅ **Automatically configures SYSTEM authentication** if needed using the JSON file
+4. ✅ Verifies authentication was successful
+5. ✅ Creates scheduled task with:
    - Runs 15 minutes after PC startup
    - Runs daily at 2:00 AM
    - Prevents duplicate execution at boot if already run recently
    - Uses local hostname and first available Fileset
-   - Calls New-RscFileSnapshot.ps1 which uses existing encrypted credentials
+   - Executes as SYSTEM account with verified authentication
 
-### Important Note on Credentials
+### Subsequent Task Creations
 
-The scheduler creates a task that calls `New-RscFileSnapshot.ps1`. This script requires encrypted credentials to be configured BEFORE creating the scheduled task.
+After initial setup, you can create additional tasks without providing the JSON again:
 
-**To configure credentials**:
 ```powershell
-# Place Service Account JSON in script directory, then run:
-.\New-RscFileSnapshot.ps1 -SlaName "Gold"
-# This configures encrypted credentials and deletes the JSON file
+# SYSTEM is already authenticated, no JSON needed
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Silver" -FilesetName "Archives*"
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Bronze" -RecurringTime "14:00"
 ```
 
-**To verify credentials are configured**:
-```powershell
-.\Check-RscServiceAccountStatus.ps1
-```
+### Important Note on Authentication
+
+**NEW in v1.1**: Authentication is handled automatically!
+
+- The script verifies SYSTEM account authentication status
+- If not authenticated, it automatically configures it using the provided JSON file
+- Authentication is verified before task creation
+- You only need to provide the JSON file once during initial setup
+- All subsequent scheduled tasks use the configured authentication
 
 ### Verify Task Creation
 
@@ -236,6 +285,7 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 |-----------|------|---------|-------------|
 | `-ScriptPath` | String | Same directory | Path to `New-RscFileSnapshot.ps1` |
 | `-TaskName` | String | `Rubrik Fileset Backup - Auto` | Name of scheduled task |
+| `-ServiceAccountJsonPath` | String | Auto-detect | Path to Service Account JSON file for SYSTEM authentication (NEW in v1.1) |
 
 ### Snapshot Parameters (Passed to New-RscFileSnapshot.ps1)
 
@@ -272,36 +322,54 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 
 ## Configuration Examples
 
-### Example 1: Default Configuration (with auto-detected JSON)
+### Example 1: Default Configuration (First Time Setup)
 
 ```powershell
-# Ensure service-account-*.json is in script directory
+# First time - provide JSON file (auto-configures SYSTEM authentication)
+.\New-RscFileSnapshotScheduler.ps1 `
+    -SlaName "Gold" `
+    -ServiceAccountJsonPath "C:\Downloads\service-account-rsc123.json"
+```
+
+**Behavior:**
+- ✅ Automatically verifies SYSTEM authentication
+- ✅ Configures SYSTEM authentication using provided JSON
+- ✅ Verifies authentication was successful
+- ✅ Creates task: Runs 15 min after boot + daily at 2:00 AM
+- ✅ Prevents duplicate at boot if already run recently
+
+### Example 2: Auto-Detect JSON in Script Directory
+
+```powershell
+# Place JSON in script directory, script will auto-detect it
+Copy-Item "C:\Downloads\service-account-*.json" $PSScriptRoot
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
 **Behavior:**
-- Auto-detects and configures Service Account JSON
-- Runs 15 minutes after boot
-- Runs daily at 2:00 AM
-- Prevents duplicate at boot if already run recently
+- Script automatically finds and uses JSON file
+- Configures SYSTEM authentication
+- Creates task with default settings
 
-### Example 2: Specify JSON Path
+### Example 3: Subsequent Task Creation (No JSON Needed)
+
+```powershell
+# After initial setup, SYSTEM is already authenticated
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Silver" -FilesetName "Archives*"
+```
+
+**Behavior:**
+- Skips authentication setup (already configured)
+- Creates new task using existing SYSTEM credentials
+- Works immediately without manual intervention
+
+### Example 4: Boot Only (No Recurring)
 
 ```powershell
 .\New-RscFileSnapshotScheduler.ps1 `
     -SlaName "Gold" `
-    -ServiceAccountJsonPath "C:\SecureFolder\rubrik-credentials.json"
-```
-
-**Behavior:**
-- Uses specified JSON file path
-- Creates encrypted credentials
-- Deletes original JSON after configuration
-
-### Example 3: Boot Only (No Recurring)
-
-```powershell
-.\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -EnableRecurringSchedule No
+    -EnableRecurringSchedule No `
+    -ServiceAccountJsonPath "C:\Creds\rubrik.json"
 ```
 
 **Behavior:**
@@ -309,7 +377,7 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 - No recurring schedule
 - Useful for laptops that aren't always on
 
-### Example 4: Recurring Only (No Boot)
+### Example 5: Recurring Only (No Boot)
 
 ```powershell
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -EnableBootExecution No
@@ -320,7 +388,7 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 - Runs daily at 2:00 AM
 - Useful for servers with predictable uptime
 
-### Example 5: Custom Boot Delay
+### Example 6: Custom Boot Delay
 
 ```powershell
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -BootDelayMinutes 30
@@ -331,7 +399,7 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 - Runs daily at 2:00 AM
 - Good for systems with slow startup
 
-### Example 6: Every 12 Hours
+### Example 7: Every 12 Hours
 
 ```powershell
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Silver" -RecurringTime "14:00" -RecurringIntervalHours 12
@@ -341,7 +409,7 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 - Runs 15 minutes after boot
 - Runs at 2:00 PM and repeats every 12 hours (2:00 PM, 2:00 AM, 2:00 PM...)
 
-### Example 7: Every 6 Hours (High Frequency)
+### Example 8: Every 6 Hours (High Frequency)
 
 ```powershell
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Platinum" -RecurringTime "00:00" -RecurringIntervalHours 6
@@ -418,73 +486,125 @@ Get-ScheduledTask -TaskName "Rubrik Fileset Backup - Auto" | Get-ScheduledTaskIn
 
 ## How It Works
 
-### Execution Flow (NEW - 5 Steps)
+### Execution Flow (NEW in v1.1 - 6 Steps with Automatic Authentication)
 
 ```
-Step 1: Import RubrikSecurityCloud Module
-   ↓
-   Check if module is loaded
-   ↓
-   Import module if needed
-   ↓
-Step 2: Configure Service Account (MANDATORY)
-   ↓
-   Detect JSON file (auto or specified path)
-   ↓
-   Run Set-RscServiceAccountFile
-   ↓
-   Create encrypted credentials XML
-   ↓
-   Delete original JSON file
-   ↓
-Step 3: Validate Environment
+Step 1: Validate Environment
    ↓
    Check Administrator privileges
    ↓
    Verify script paths
    ↓
+Step 2: Check SYSTEM Authentication Status (NEW)
+   ↓
+   Test if SYSTEM account can authenticate to RSC
+   ↓
+   Already authenticated? → Yes → Skip to Step 4
+                        → No  → Continue to Step 3
+   ↓
+Step 3: Configure SYSTEM Authentication (NEW - Automatic)
+   ↓
+   Detect JSON file (auto-detect or specified path)
+   ↓
+   Create temporary setup script
+   ↓
+   Run setup as SYSTEM using scheduled task
+   ↓
+   Configure encrypted credentials for SYSTEM
+   ↓
+   Verify authentication successful
+   ↓
 Step 4: Build Command Arguments
    ↓
-   Construct PowerShell command
+   Construct PowerShell command with parameters
    ↓
 Step 5: Create Scheduled Task
    ↓
-   Register task with triggers
+   Create boot trigger (if enabled)
    ↓
-   Configure advanced settings
+   Create recurring trigger (if enabled)
+   ↓
+   Configure task settings (battery, network, etc.)
+   ↓
+   Register task with SYSTEM principal
+   ↓
+Step 6: Apply Advanced Configuration
+   ↓
+   Configure boot delay via COM interface
+   ↓
+   Apply duplicate prevention settings
    ↓
 Complete
 ```
 
-### Service Account Configuration Process (NEW)
+### SYSTEM Authentication Configuration (NEW in v1.1)
+
+The script now **automatically handles SYSTEM account authentication**:
 
 ```
 JSON File Detection
    ↓
-Auto-detect in script directory OR use -ServiceAccountJsonPath
+Check -ServiceAccountJsonPath parameter
+   ↓ Not provided
+Auto-detect *.json files in script directory
    ↓
-Validation
+File Found?
+   ↓ Yes                    ↓ No
+Continue              Show error + exit
    ↓
-File exists? → Yes → Continue
-            → No  → ERROR: Exit with instructions
+Test SYSTEM Authentication
    ↓
-Configuration
+Create temporary test task as SYSTEM
    ↓
-Run: Set-RscServiceAccountFile -DisablePrompts
+Try to Connect-Rsc and Get-RscCluster
    ↓
-Encrypted XML Created
+Already authenticated?
+   ↓ Yes                    ↓ No
+Skip configuration    Configure now
+   ↓                        ↓
+                    Create setup script
+                    ↓
+                    Run as SYSTEM via scheduled task
+                    ↓
+                    Set-RscServiceAccountFile
+                    ↓
+                    Wait for completion
+                    ↓
+                    Cleanup temporary files
    ↓
-Location: $PROFILE\..\rubrik-powershell-sdk\rsc_service_account_default.xml
+Verify Authentication
    ↓
-Security Cleanup
+Test SYSTEM authentication again
    ↓
-Original JSON file deleted
+Success?
+   ↓ Yes                    ↓ No
+Continue              Show manual steps + exit
    ↓
-Verification
+Create Scheduled Task
+```
+
+### Traditional Configuration Flow (Still Available)
+
+If automatic configuration fails, you can still configure manually:
+
+```
+Manual Configuration (Legacy)
    ↓
-Check encrypted file exists
+Run PowerShell as SYSTEM (using PsExec)
    ↓
-Success
+PsExec.exe -i -s powershell.exe
+   ↓
+In SYSTEM PowerShell session:
+   ↓
+Import-Module RubrikSecurityCloud
+   ↓
+Set-RscServiceAccountFile -InputFilePath "path\to\file.json"
+   ↓
+Connect-Rsc (to verify)
+   ↓
+Exit SYSTEM session
+   ↓
+Run scheduler as regular admin user
 ```
 
 ### Task Execution Flow (After Creation)
@@ -498,11 +618,21 @@ Check: Has task run in last 24h?
    ↓ No                    ↓ Yes
 Execute snapshot      Skip execution
    ↓
-Connect-Rsc (uses encrypted credentials automatically)
+powershell.exe runs as SYSTEM
+   ↓
+Import RubrikSecurityCloud module
+   ↓
+Connect-Rsc (uses SYSTEM encrypted credentials automatically)
+   ↓
+Get-RscHost and Get-RscFileset
+   ↓
+New-RscFilesetSnapshot
+   ↓
+Snapshot created successfully
    ↓
 Wait until 2:00 AM
    ↓
-Execute snapshot
+Execute snapshot again
    ↓
 Wait 24 hours
    ↓
@@ -638,69 +768,118 @@ Verify:
 Get-Module -ListAvailable RubrikSecurityCloud
 ```
 
-#### 2. "No Service Account JSON file found" ⚠️ **NEW**
+#### 2. "SYSTEM account is not authenticated" ⚠️ **NEW in v1.1**
 
 **Error:**
 ```
-ERROR: No Service Account JSON file found in script directory.
-A Rubrik Service Account JSON file is REQUIRED to create the scheduled task.
+SYSTEM account is not authenticated - configuration required
+Service Account JSON file not found
 ```
 
-**Solutions:**
-
-**Option A - Place JSON in script directory (recommended):**
+**Solution A - Provide JSON file (Automatic Configuration):**
 ```powershell
-# Download JSON from Rubrik Security Cloud
-# Then copy to script directory
-Copy-Item "C:\Downloads\service-account-*.json" "C:\Scripts\RubrikBackup\"
-```
-
-**Option B - Specify JSON path:**
-```powershell
+# Option 1: Specify JSON path
 .\New-RscFileSnapshotScheduler.ps1 `
     -SlaName "Gold" `
-    -ServiceAccountJsonPath "C:\Credentials\rubrik-service-account.json"
+    -ServiceAccountJsonPath "C:\Downloads\service-account-rsc123.json"
+
+# Option 2: Place JSON in script directory
+Copy-Item "C:\Downloads\service-account-*.json" .
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
-**Option C - Create Service Account:**
+**Solution B - Manual Configuration (if automatic fails):**
 ```powershell
-# Use the helper script
-.\New-RscServiceAccount.ps1 -ServiceAccountName "FilesetBackupAutomation"
+# 1. Download PsExec from Sysinternals
+# https://docs.microsoft.com/en-us/sysinternals/downloads/psexec
+
+# 2. Run PowerShell as SYSTEM
+PsExec.exe -i -s powershell.exe
+
+# 3. In SYSTEM PowerShell, configure authentication
+Import-Module RubrikSecurityCloud
+Set-RscServiceAccountFile -InputFilePath "C:\Path\To\service-account.json"
+Connect-Rsc  # Test connection
+Disconnect-Rsc
+exit
+
+# 4. Run scheduler as regular admin
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
-#### 3. "Failed to configure Service Account" ⚠️ **NEW**
+#### 3. "Failed to configure SYSTEM account authentication" ⚠️ **NEW in v1.1**
 
 **Error:**
 ```
-ERROR: Failed to configure Service Account: [error details]
+ERROR: Failed to configure SYSTEM account authentication (Exit Code: XXX)
 ```
 
 **Common Causes & Solutions:**
 
+**Module not installed with AllUsers scope:**
+```powershell
+# Uninstall current module
+Uninstall-Module -Name RubrikSecurityCloud -AllVersions
+
+# Reinstall with AllUsers scope (REQUIRED)
+Install-Module -Name RubrikSecurityCloud -Scope AllUsers -Force
+
+# Verify
+Get-Module -ListAvailable RubrikSecurityCloud
+```
+
 **Invalid JSON file:**
 ```powershell
-# Verify JSON is valid
+# Test JSON validity
 Get-Content "service-account-*.json" | ConvertFrom-Json
 
 # Re-download from Rubrik Security Cloud if corrupted
 ```
 
+**Execution policy restrictions:**
+```powershell
+# Check execution policy
+Get-ExecutionPolicy
+
+# Set to appropriate level
+Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
+```
+
 **Permissions issue:**
 ```powershell
-# Check write permissions to profile directory
-Test-Path (Split-Path $PROFILE) -PathType Container
+# Ensure running as Administrator
+([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-# Run PowerShell as Administrator
-Start-Process powershell -Verb RunAs
+# Check SYSTEM profile directory exists
+Test-Path "C:\Windows\System32\config\systemprofile\Documents\WindowsPowerShell"
 ```
 
-**Module version mismatch:**
+#### 4. "Service Account JSON file not found"
+
+**Error:**
+```
+ERROR: No Service Account JSON file found in script directory.
+```
+
+**Solutions:**
+
+**Option A - Download and provide JSON:**
 ```powershell
-# Update to latest module version
-Update-Module -Name RubrikSecurityCloud -Force
+# 1. Download JSON from Rubrik Security Cloud UI
+# 2. Provide path to scheduler
+.\New-RscFileSnapshotScheduler.ps1 `
+    -SlaName "Gold" `
+    -ServiceAccountJsonPath "C:\Downloads\service-account-rsc123.json"
 ```
 
-#### 4. "This script requires Administrator privileges"
+**Option B - Create Service Account:**
+```powershell
+# Use the helper script
+.\New-RscServiceAccount.ps1 -ServiceAccountName "FilesetBackupAutomation"
+# Then download the JSON file from RSC
+```
+
+#### 5. "This script requires Administrator privileges"
 
 **Error:**
 ```
@@ -714,7 +893,7 @@ ERROR: This script requires Administrator privileges to create scheduled tasks.
 Start-Process powershell -Verb RunAs
 ```
 
-#### 5. "Parameter -SlaName is required"
+#### 6. "Parameter -SlaName is required"
 
 **Error:**
 ```
@@ -750,7 +929,7 @@ cd C:\Scripts
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
-#### 7. Task Doesn't Execute
+#### 7. Task Doesn't Execute ⚠️ **UPDATED for v1.1**
 
 **Diagnosis:**
 ```powershell
@@ -766,11 +945,43 @@ Get-WinEvent -LogName 'Microsoft-Windows-TaskScheduler/Operational' -MaxEvents 5
 ```
 
 **Common Causes:**
-- Service Account not configured (should be impossible with new version)
-- Service Account expired or deleted in Rubrik
-- Network not available when task runs
-- Rubrik cluster unreachable
-- Incorrect SLA name
+
+1. **SYSTEM Account Not Authenticated (v1.1 should prevent this):**
+```powershell
+# Verify SYSTEM authentication manually
+# Run PowerShell as SYSTEM
+PsExec.exe -i -s powershell.exe
+
+# In SYSTEM PowerShell session
+Import-Module RubrikSecurityCloud
+Connect-Rsc  # Should work without prompts
+Get-RscCluster
+Disconnect-Rsc
+exit
+```
+
+2. **Service Account expired or deleted in Rubrik:**
+   - Check Service Account status in Rubrik Security Cloud UI
+   - Regenerate credentials if needed
+   - Re-run scheduler with new JSON file
+
+3. **Network not available when task runs:**
+   - Increase boot delay: `-BootDelayMinutes 30`
+   - Check Task Scheduler history for network-related errors
+
+4. **Module not installed with AllUsers scope:**
+```powershell
+# Verify module installation scope
+Get-Module -ListAvailable RubrikSecurityCloud | Select-Object Name, Path
+
+# Path should contain "Program Files" not "Documents"
+# Correct: C:\Program Files\WindowsPowerShell\Modules\RubrikSecurityCloud
+# Wrong:   C:\Users\...\Documents\WindowsPowerShell\Modules\RubrikSecurityCloud
+
+# Fix if needed
+Uninstall-Module RubrikSecurityCloud -AllVersions
+Install-Module RubrikSecurityCloud -Scope AllUsers -Force
+```
 
 #### 8. Task Runs But Fails
 
@@ -786,19 +997,24 @@ Get-ChildItem -Filter "New-RscFileSnapshot_*.log" |
     Get-Content -Tail 50
 ```
 
-**Check Service Account:**
+**Check SYSTEM Account Authentication (NEW):**
 ```powershell
-# Verify encrypted credentials exist
-$encryptedPath = Join-Path (Split-Path $PROFILE) "rubrik-powershell-sdk\rsc_service_account_default.xml"
-Test-Path $encryptedPath
+# Test SYSTEM authentication
+PsExec.exe -i -s powershell.exe
 
-# Test connection
+# In SYSTEM PowerShell
+$encryptedPath = "C:\Windows\System32\config\systemprofile\Documents\WindowsPowerShell\rubrik-powershell-sdk\rsc_service_account_default.xml"
+Test-Path $encryptedPath  # Should be True
+
+Import-Module RubrikSecurityCloud
 Connect-Rsc
 Get-RscCluster  # Should work if credentials are valid
 Disconnect-Rsc
+exit
 ```
 
 **Common Issues:**
+- SYSTEM account credentials not configured (v1.1 should prevent this)
 - Service Account expired or deleted
 - SLA policy renamed/deleted
 - Host or Fileset no longer exists
@@ -1311,6 +1527,14 @@ Register-ScheduledTask -Xml (Get-Content "C:\Backup\RubrikTask.xml" | Out-String
 
 ## Version History
 
+- **1.1** (February 2026): 
+  - Added automatic SYSTEM account authentication verification
+  - Added automatic SYSTEM authentication configuration
+  - Improved error handling for authentication failures
+  - Added ServiceAccountJsonPath parameter
+  - Enhanced troubleshooting documentation
+  - Task creation now verifies authentication before proceeding
+  
 - **1.0** (January 2026): Initial release
 
 ---
