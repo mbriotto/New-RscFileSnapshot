@@ -11,10 +11,10 @@
     if not already present for the SYSTEM user profile.
 
 .NOTES
-    Version:        1.1
+    Version:        1.4
     Author:         Matteo Briotto
     Creation Date:  January 2026
-    Purpose/Change: Added SYSTEM account authentication verification and auto-configuration
+    Purpose/Change: Enhanced error diagnostics with detailed network connectivity troubleshooting
 
 .LINK
     https://github.com/mbriotto/rubrik-scripts
@@ -134,6 +134,9 @@
       - Exit 1: error occurred
 
 .VERSION
+    1.4 - Enhanced error diagnostics with network connectivity troubleshooting
+    1.3 - Fixed SYSTEM profile directory creation for authentication
+    1.2 - Improved JSON file detection (accepts any .json file)
     1.1 - Added SYSTEM account authentication verification and auto-configuration
 
 .AUTHOR
@@ -443,7 +446,7 @@ Write-Host "==========================================================" -Foregro
 Write-Host " RUBRIK FILESET SNAPSHOT - TASK SCHEDULER " -ForegroundColor Yellow
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Version: 1.1" -ForegroundColor Gray
+Write-Host "Version: 1.4" -ForegroundColor Gray
 Write-Host "Author: Matteo Briotto" -ForegroundColor Gray
 Write-Host "License: GPL-3.0" -ForegroundColor Gray
 Write-Host ""
@@ -567,10 +570,58 @@ function Set-SystemAuthentication {
         # Create a temporary script to run as SYSTEM
         $tempScript = Join-Path $env:TEMP "setup-rsc-system-$( Get-Random).ps1"
         $setupScript = @"
-Import-Module RubrikSecurityCloud -Force
-Set-RscServiceAccountFile -InputFilePath '$JsonPath'
-Connect-Rsc
-Disconnect-Rsc
+# Result tracking
+`$result = @{
+    Success = `$false
+    Error = `$null
+    ErrorType = `$null
+    Step = `$null
+}
+
+try {
+    # Step 1: Ensure SYSTEM profile directories exist
+    `$result.Step = 'Creating directories'
+    `$systemProfilePath = 'C:\Windows\System32\config\systemprofile\Documents\WindowsPowerShell'
+    if (-not (Test-Path `$systemProfilePath)) {
+        New-Item -Path `$systemProfilePath -ItemType Directory -Force | Out-Null
+    }
+
+    `$rscPath = Join-Path `$systemProfilePath 'rubrik-powershell-sdk'
+    if (-not (Test-Path `$rscPath)) {
+        New-Item -Path `$rscPath -ItemType Directory -Force | Out-Null
+    }
+
+    # Step 2: Enable TLS 1.2/1.3 for secure connections
+    `$result.Step = 'Configuring TLS'
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
+
+    # Step 3: Import module
+    `$result.Step = 'Loading module'
+    Import-Module RubrikSecurityCloud -Force -ErrorAction Stop
+
+    # Step 4: Configure authentication
+    `$result.Step = 'Configuring credentials'
+    Set-RscServiceAccountFile -InputFilePath '$JsonPath' -ErrorAction Stop
+
+    # Step 5: Test connection
+    `$result.Step = 'Testing connection'
+    Connect-Rsc -ErrorAction Stop
+    Disconnect-Rsc -ErrorAction SilentlyContinue
+    
+    `$result.Success = `$true
+
+} catch {
+    `$result.Error = `$_.Exception.Message
+    `$result.ErrorType = `$_.Exception.GetType().Name
+    
+    # Capture inner exception if present
+    if (`$_.Exception.InnerException) {
+        `$result.InnerError = `$_.Exception.InnerException.Message
+    }
+}
+
+# Save result to file for parent script to read
+`$result | ConvertTo-Json -Depth 3 | Out-File 'C:\Windows\Temp\rsc-system-setup-result.json' -Force
 "@
         Set-Content -Path $tempScript -Value $setupScript -Force
         
@@ -594,19 +645,99 @@ Disconnect-Rsc
         } while ($taskState -eq 'Running' -and $elapsed -lt $timeout)
         
         $taskInfo = Get-ScheduledTaskInfo -TaskName $setupTaskName
-        $success = ($taskInfo.LastTaskResult -eq 0)
+        $taskExitCode = $taskInfo.LastTaskResult
+        
+        # Read detailed result from the task
+        $resultFile = "C:\Windows\Temp\rsc-system-setup-result.json"
+        $detailedResult = $null
+        
+        if (Test-Path $resultFile) {
+            try {
+                $detailedResult = Get-Content $resultFile -Raw | ConvertFrom-Json
+                Remove-Item -Path $resultFile -Force -ErrorAction SilentlyContinue
+            } catch {
+                Write-Log -Message "Could not read detailed result file" -Level Warning
+            }
+        }
         
         # Cleanup
         Unregister-ScheduledTask -TaskName $setupTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Remove-Item -Path $tempScript -Force -ErrorAction SilentlyContinue
         
-        if ($success) {
+        if ($taskExitCode -eq 0 -and $detailedResult -and $detailedResult.Success) {
             Write-ColorOutput "SYSTEM account authentication configured successfully" -Level Success
             Write-Log -Message "SYSTEM authentication configured successfully" -Level Success
             return $true
         } else {
-            Write-ColorOutput "Failed to configure SYSTEM account authentication (Exit Code: $($taskInfo.LastTaskResult))" -Level Error
-            Write-Log -Message "SYSTEM authentication configuration failed: Exit Code $($taskInfo.LastTaskResult)" -Level Error
+            Write-ColorOutput "Failed to configure SYSTEM account authentication" -Level Error
+            Write-Host ""
+            
+            if ($detailedResult) {
+                Write-Host "Error Details:" -ForegroundColor Yellow
+                Write-Host "  Step: $($detailedResult.Step)" -ForegroundColor White
+                Write-Host "  Error: $($detailedResult.Error)" -ForegroundColor Red
+                Write-Host "  Type: $($detailedResult.ErrorType)" -ForegroundColor Gray
+                
+                if ($detailedResult.InnerError) {
+                    Write-Host "  Inner Error: $($detailedResult.InnerError)" -ForegroundColor Red
+                }
+                
+                Write-Log -Message "SYSTEM auth failed at step: $($detailedResult.Step) - $($detailedResult.Error)" -Level Error
+                
+                # Provide specific guidance based on error type
+                Write-Host ""
+                if ($detailedResult.Error -match "invio della richiesta|sending the request|network|timeout|timed out") {
+                    Write-Host "NETWORK CONNECTIVITY ISSUE DETECTED" -ForegroundColor Yellow
+                    Write-Host ""
+                    Write-Host "This appears to be a network connectivity problem." -ForegroundColor White
+                    Write-Host "Common causes and solutions:" -ForegroundColor Cyan
+                    Write-Host ""
+                    Write-Host "1. Corporate Firewall/Proxy:" -ForegroundColor Yellow
+                    Write-Host "   - Contact your IT department to allow access to *.rubrik.com" -ForegroundColor Gray
+                    Write-Host "   - Ensure HTTPS (port 443) is allowed for PowerShell" -ForegroundColor Gray
+                    Write-Host ""
+                    Write-Host "2. TLS/SSL Configuration:" -ForegroundColor Yellow
+                    Write-Host "   - The script now enables TLS 1.2/1.3 automatically" -ForegroundColor Gray
+                    Write-Host "   - Ensure your system supports TLS 1.2 or higher" -ForegroundColor Gray
+                    Write-Host ""
+                    Write-Host "3. Proxy Configuration:" -ForegroundColor Yellow
+                    Write-Host "   - If behind a corporate proxy, configure it:" -ForegroundColor Gray
+                    Write-Host "     netsh winhttp set proxy proxy-server=`"http://proxy:port`"" -ForegroundColor White
+                    Write-Host ""
+                    Write-Host "4. DNS Resolution:" -ForegroundColor Yellow
+                    Write-Host "   - Verify DNS can resolve: gabrielli.my.rubrik.com" -ForegroundColor Gray
+                    Write-Host "     nslookup gabrielli.my.rubrik.com" -ForegroundColor White
+                    Write-Host ""
+                    Write-Host "5. Test Connectivity:" -ForegroundColor Yellow
+                    Write-Host "   - Use the diagnostic script provided:" -ForegroundColor Gray
+                    Write-Host "     .\Test-NetworkConnectivity.ps1" -ForegroundColor White
+                    Write-Host ""
+                } elseif ($detailedResult.Error -match "credentials|authentication|unauthorized|forbidden") {
+                    Write-Host "AUTHENTICATION ISSUE DETECTED" -ForegroundColor Yellow
+                    Write-Host ""
+                    Write-Host "Possible causes:" -ForegroundColor Cyan
+                    Write-Host "  - Service Account credentials may be invalid or expired" -ForegroundColor Gray
+                    Write-Host "  - JSON file may be corrupted" -ForegroundColor Gray
+                    Write-Host "  - Service Account may have been deleted in RSC" -ForegroundColor Gray
+                    Write-Host ""
+                    Write-Host "Solution:" -ForegroundColor Yellow
+                    Write-Host "  1. Verify the Service Account exists in Rubrik Security Cloud" -ForegroundColor Gray
+                    Write-Host "  2. Download a fresh JSON file" -ForegroundColor Gray
+                    Write-Host "  3. Re-run this script with the new JSON file" -ForegroundColor Gray
+                    Write-Host ""
+                } else {
+                    Write-Host "For assistance, please check:" -ForegroundColor Yellow
+                    Write-Host "  - Rubrik Security Cloud status" -ForegroundColor Gray
+                    Write-Host "  - Network connectivity to Rubrik cloud" -ForegroundColor Gray
+                    Write-Host "  - Windows Event Viewer for detailed errors" -ForegroundColor Gray
+                    Write-Host ""
+                }
+            } else {
+                Write-Host "Task Exit Code: $taskExitCode" -ForegroundColor Red
+                Write-Host ""
+                Write-Log -Message "SYSTEM authentication configuration failed: Exit Code $taskExitCode" -Level Error
+            }
+            
             return $false
         }
         
@@ -638,10 +769,28 @@ if ($RunAsUser -eq 'SYSTEM') {
             $jsonFile = $ServiceAccountJsonPath
         } else {
             # Search for JSON file in script directory
-            $jsonFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.json" | Where-Object { $_.Name -match "service.*account" }
+            # Accept any .json file (common names: service account, credentials, rubrik, etc.)
+            $jsonFiles = Get-ChildItem -Path $PSScriptRoot -Filter "*.json" -ErrorAction SilentlyContinue
             if ($jsonFiles.Count -gt 0) {
-                $jsonFile = $jsonFiles[0].FullName
-                Write-ColorOutput "Found Service Account JSON: $($jsonFiles[0].Name)" -Level Info
+                if ($jsonFiles.Count -eq 1) {
+                    # Single JSON file found - use it
+                    $jsonFile = $jsonFiles[0].FullName
+                    Write-ColorOutput "Found JSON file: $($jsonFiles[0].Name)" -Level Info
+                } else {
+                    # Multiple JSON files - try to prioritize by common naming patterns
+                    $priorityFile = $jsonFiles | Where-Object { 
+                        $_.Name -match "(service|account|rubrik|rsc|credential|auth)" 
+                    } | Select-Object -First 1
+                    
+                    if ($priorityFile) {
+                        $jsonFile = $priorityFile.FullName
+                        Write-ColorOutput "Found JSON file: $($priorityFile.Name) (selected from $($jsonFiles.Count) files)" -Level Info
+                    } else {
+                        # No priority match - use first file
+                        $jsonFile = $jsonFiles[0].FullName
+                        Write-ColorOutput "Found JSON file: $($jsonFiles[0].Name) (first of $($jsonFiles.Count) files)" -Level Info
+                    }
+                }
             }
         }
         

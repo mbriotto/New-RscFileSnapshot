@@ -9,6 +9,9 @@ PowerShell script for creating Windows Scheduled Tasks to automate Rubrik Filese
 
 `New-RscFileSnapshotScheduler.ps1` automates the creation of Windows Scheduled Tasks that execute `New-RscFileSnapshot.ps1` at configurable intervals. The script supports boot-time execution with delays, recurring schedules, and intelligent duplicate prevention.
 
+**NEW in v1.4**: Enhanced error diagnostics with detailed network connectivity troubleshooting!  
+**NEW in v1.3**: Fixed SYSTEM profile directory creation for authentication  
+**NEW in v1.2**: Improved JSON file detection - now accepts any `.json` file in the script directory!  
 **NEW in v1.1**: Automatic SYSTEM account authentication verification and configuration!
 
 ### Key Features
@@ -75,9 +78,9 @@ You need to configure Rubrik Service Account credentials before running the sche
 
 **Important**: Service Account credentials must be configured for the SYSTEM account when using default task settings.
 
-#### Automatic Configuration (Recommended - NEW in v1.1)
+#### Automatic Configuration (Recommended - NEW in v1.1, Enhanced in v1.2)
 
-The scheduler script now **automatically handles SYSTEM account authentication**:
+The scheduler script now **automatically handles SYSTEM account authentication** and **detects JSON files flexibly**:
 
 1. **Create Service Account in Rubrik**
    - Use [New-RscServiceAccount.ps1](New-RscServiceAccount.ps1-README.md) for guided creation
@@ -85,6 +88,7 @@ The scheduler script now **automatically handles SYSTEM account authentication**
 
 2. **Download JSON credentials**
    - Download the Service Account JSON file from Rubrik Security Cloud
+   - **Any filename works** - no specific naming required!
 
 3. **Run the scheduler with JSON path**
    ```powershell
@@ -92,16 +96,24 @@ The scheduler script now **automatically handles SYSTEM account authentication**
    .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -ServiceAccountJsonPath "C:\Creds\rubrik.json"
    ```
    
-   OR place the JSON file in the script directory:
+   OR place **any** JSON file in the script directory:
    ```powershell
-   # Script will auto-detect JSON file and configure authentication
-   Copy-Item "C:\Downloads\service-account-*.json" $PSScriptRoot
+   # Script will auto-detect ANY .json file and configure authentication
+   # Examples of filenames that work:
+   # - "Powershell Fileset Snapshot Operator.json"
+   # - "rubrik-service-account.json"
+   # - "my-credentials.json"
+   # - ANY .json file!
+   
+   Copy-Item "C:\Downloads\Powershell Fileset Snapshot Operator.json" $PSScriptRoot
    .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
    ```
 
 **What happens automatically**:
-- Script verifies if SYSTEM account is authenticated
-- If not authenticated, automatically configures it using the provided JSON
+- Script searches for **any `.json` file** in the script directory (no naming restrictions!)
+- If multiple JSON files exist, prioritizes files with keywords: "service", "account", "rubrik", "rsc", "credential", "auth"
+- Verifies if SYSTEM account is authenticated
+- If not authenticated, automatically configures it using the detected JSON file
 - Verifies authentication after configuration
 - Creates the scheduled task only after successful authentication
 - Task execution will work immediately without manual intervention
@@ -194,7 +206,7 @@ Copy-Item "C:\Downloads\service-account-*.json" "."
 .\New-RscFileSnapshotScheduler.ps1
 ```
 
-### Default Configuration (Recommended) - NEW Simplified Process
+### Default Configuration (Recommended) - Simplified with v1.2
 
 ```powershell
 # 1. Run PowerShell as Administrator
@@ -204,8 +216,13 @@ Copy-Item "C:\Downloads\service-account-*.json" "."
     -SlaName "Gold" `
     -ServiceAccountJsonPath "C:\Downloads\service-account-rsc123.json"
 
-# OR simply place JSON in script directory and run:
-Copy-Item "C:\Downloads\service-account-*.json" .
+# OR simply place ANY JSON file in script directory and run:
+# Works with any filename - examples:
+# - "Powershell Fileset Snapshot Operator.json" ✅
+# - "rubrik-credentials.json" ✅
+# - "my-service-account.json" ✅
+
+Copy-Item "C:\Downloads\Powershell Fileset Snapshot Operator.json" .
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
@@ -233,10 +250,13 @@ After initial setup, you can create additional tasks without providing the JSON 
 
 ### Important Note on Authentication
 
+**NEW in v1.2**: Flexible JSON file detection!
 **NEW in v1.1**: Authentication is handled automatically!
 
+- The script accepts **any `.json` file** - no specific naming required
+- If multiple JSON files exist, it intelligently selects the most appropriate one
 - The script verifies SYSTEM account authentication status
-- If not authenticated, it automatically configures it using the provided JSON file
+- If not authenticated, it automatically configures it using the detected JSON file
 - Authentication is verified before task creation
 - You only need to provide the JSON file once during initial setup
 - All subsequent scheduled tasks use the configured authentication
@@ -807,16 +827,96 @@ exit
 .\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
 ```
 
-#### 3. "Failed to configure SYSTEM account authentication" ⚠️ **NEW in v1.1**
+#### 3. "Failed to configure SYSTEM account authentication" ⚠️ **ENHANCED in v1.4**
 
 **Error:**
 ```
-ERROR: Failed to configure SYSTEM account authentication (Exit Code: XXX)
+ERROR: Failed to configure SYSTEM account authentication
+Step: Testing connection
+Error: Si sono verificati uno o più errori / An error occurred while sending the request
 ```
+
+This error now includes detailed diagnostics! The script will automatically detect the failure type and provide specific guidance.
 
 **Common Causes & Solutions:**
 
-**Module not installed with AllUsers scope:**
+**A. Network Connectivity Issues** (Most Common - v1.4 Enhanced Detection)
+
+If you see "NETWORK CONNECTIVITY ISSUE DETECTED" in the error output:
+
+```
+NETWORK CONNECTIVITY ISSUE DETECTED
+
+This appears to be a network connectivity problem.
+```
+
+**Diagnostic Steps:**
+
+1. **Run the network diagnostic tool** (provided with the script):
+   ```powershell
+   .\Test-NetworkConnectivity.ps1
+   ```
+
+2. **Check basic connectivity:**
+   ```powershell
+   # Test DNS resolution
+   nslookup gabrielli.my.rubrik.com
+   
+   # Test HTTPS connectivity
+   curl.exe https://gabrielli.my.rubrik.com
+   
+   # Test with PowerShell
+   Invoke-WebRequest https://gabrielli.my.rubrik.com -UseBasicParsing
+   ```
+
+**Common Network Solutions:**
+
+**Solution 1: Corporate Firewall/Proxy**
+```powershell
+# Contact your IT department to allow:
+# - Outbound HTTPS (port 443) to *.rubrik.com
+# - PowerShell.exe network access
+# - Bypass SSL/TLS inspection for *.rubrik.com (if applicable)
+```
+
+**Solution 2: Windows Proxy Configuration**
+```powershell
+# If behind a corporate proxy, configure it:
+netsh winhttp set proxy proxy-server="http://proxy.company.com:8080"
+
+# Or configure in PowerShell profile:
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
+```
+
+**Solution 3: TLS Configuration** (v1.4 - now automatic)
+```powershell
+# The script now automatically enables TLS 1.2/1.3
+# But you can verify your system supports it:
+[System.Net.ServicePointManager]::SecurityProtocol
+
+# Should include Tls12 or higher
+# If not, update Windows and .NET Framework
+```
+
+**Solution 4: DNS Issues**
+```powershell
+# Flush DNS cache
+ipconfig /flushdns
+
+# Try different DNS server temporarily
+netsh interface ip set dns "Ethernet" static 8.8.8.8
+```
+
+**Solution 5: Windows Firewall**
+```powershell
+# Check if Windows Firewall is blocking PowerShell
+# Create inbound/outbound rules for PowerShell:
+New-NetFirewallRule -DisplayName "PowerShell HTTPS Out" -Direction Outbound -Program "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Protocol TCP -LocalPort 443 -Action Allow
+```
+
+**B. Module not installed with AllUsers scope:**
 ```powershell
 # Uninstall current module
 Uninstall-Module -Name RubrikSecurityCloud -AllVersions
@@ -828,53 +928,63 @@ Install-Module -Name RubrikSecurityCloud -Scope AllUsers -Force
 Get-Module -ListAvailable RubrikSecurityCloud
 ```
 
-**Invalid JSON file:**
-```powershell
-# Test JSON validity
-Get-Content "service-account-*.json" | ConvertFrom-Json
+**C. Authentication/Credentials Issues:**
 
-# Re-download from Rubrik Security Cloud if corrupted
+If you see "AUTHENTICATION ISSUE DETECTED":
+
+```powershell
+# 1. Verify Service Account exists in Rubrik Security Cloud web UI
+# 2. Download fresh JSON credentials
+# 3. Re-run scheduler with new JSON:
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold" -ServiceAccountJsonPath "C:\Path\To\new-credentials.json"
 ```
 
-**Execution policy restrictions:**
-```powershell
-# Check execution policy
-Get-ExecutionPolicy
-
-# Set to appropriate level
-Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-```
-
-**Permissions issue:**
-```powershell
-# Ensure running as Administrator
-([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-# Check SYSTEM profile directory exists
-Test-Path "C:\Windows\System32\config\systemprofile\Documents\WindowsPowerShell"
-```
-
-#### 4. "Service Account JSON file not found"
+#### 4. "Service Account JSON file not found" ✨ **IMPROVED in v1.2**
 
 **Error:**
 ```
-ERROR: No Service Account JSON file found in script directory.
+ERROR: Service Account JSON file not found
 ```
+
+**Version 1.2 improvements:**
+- Script now accepts **ANY** `.json` file in the script directory
+- No longer requires specific naming patterns like "service.*account"
+- If multiple JSON files exist, intelligently selects the most appropriate one
 
 **Solutions:**
 
-**Option A - Download and provide JSON:**
+**Option A - Use explicit path (most reliable):**
 ```powershell
-# 1. Download JSON from Rubrik Security Cloud UI
-# 2. Provide path to scheduler
+# Works with ANY filename
 .\New-RscFileSnapshotScheduler.ps1 `
     -SlaName "Gold" `
-    -ServiceAccountJsonPath "C:\Downloads\service-account-rsc123.json"
+    -ServiceAccountJsonPath "C:\Downloads\Powershell Fileset Snapshot Operator.json"
 ```
 
-**Option B - Create Service Account:**
+**Option B - Place JSON in script directory:**
 ```powershell
-# Use the helper script
+# Copy ANY JSON file to script directory - examples that work:
+# ✅ "Powershell Fileset Snapshot Operator.json"
+# ✅ "service-account-rsc123.json"
+# ✅ "rubrik-credentials.json"
+# ✅ "my-backup-credentials.json"
+
+Copy-Item "C:\Downloads\*.json" .
+.\New-RscFileSnapshotScheduler.ps1 -SlaName "Gold"
+```
+
+**Option C - Verify JSON file exists:**
+```powershell
+# Check if any JSON files exist in script directory
+Get-ChildItem -Path $PSScriptRoot -Filter "*.json"
+
+# If multiple files exist, the script will prioritize files containing:
+# "service", "account", "rubrik", "rsc", "credential", or "auth"
+```
+
+**Option D - Create Service Account:**
+```powershell
+# Use the helper script to create new Service Account
 .\New-RscServiceAccount.ps1 -ServiceAccountName "FilesetBackupAutomation"
 # Then download the JSON file from RSC
 ```
@@ -1526,6 +1636,26 @@ Register-ScheduledTask -Xml (Get-Content "C:\Backup\RubrikTask.xml" | Out-String
 ---
 
 ## Version History
+
+- **1.4** (February 2026):
+  - **Enhanced error diagnostics** - detailed error reporting with step-by-step failure analysis
+  - **Automatic TLS 1.2/1.3 enablement** - ensures secure connections to Rubrik cloud
+  - **Network connectivity troubleshooting** - automatic detection and guidance for network issues
+  - **Contextual error messages** - specific solutions based on error type (network, auth, credentials)
+  - **Improved error capture** - includes inner exceptions and stack traces
+  - Script now provides actionable guidance for firewall, proxy, DNS, and TLS issues
+
+- **1.3** (February 2026):
+  - Fixed SYSTEM profile directory creation
+  - Ensured PowerShell profile paths exist before credential configuration
+  - Improved reliability of SYSTEM account authentication setup
+
+- **1.2** (February 2026):
+  - **Improved JSON file detection** - now accepts any `.json` file in script directory
+  - No longer requires specific naming patterns like "service.*account"
+  - Intelligent selection when multiple JSON files are present
+  - Prioritizes files with common keywords (service, account, rubrik, rsc, credential, auth)
+  - Better user feedback about which JSON file was selected
 
 - **1.1** (February 2026): 
   - Added automatic SYSTEM account authentication verification
