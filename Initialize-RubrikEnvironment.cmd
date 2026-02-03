@@ -1,7 +1,7 @@
 @ECHO OFF
 REM ============================================================================
 REM Initialize-RubrikEnvironment.cmd  
-REM Version: 1.5.0 - Embedded PowerShell script (FINAL)
+REM Version: 1.6.0 - Added ExecutionPolicy configuration
 REM ============================================================================
 
 SETLOCAL EnableDelayedExpansion
@@ -23,7 +23,7 @@ IF %ERRORLEVEL% NEQ 0 (
 SET "SCRIPT_DIR=%~dp0"
 CD /D "%SCRIPT_DIR%"
 
-ECHO [STEP 1/4] Checking module...
+ECHO [STEP 1/5] Checking module...
 ECHO.
 
 PowerShell -NoProfile -ExecutionPolicy Bypass -Command "if (Get-Module -ListAvailable -Name RubrikSecurityCloud) { exit 0 } else { exit 1 }"
@@ -32,7 +32,7 @@ IF %ERRORLEVEL% EQU 0 (
     ECHO [OK] Already installed
     PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$m = Get-Module -ListAvailable -Name RubrikSecurityCloud | Select -First 1; Write-Host '  Version:' $m.Version -ForegroundColor Gray"
     ECHO.
-    GOTO :UNBLOCK_SCRIPTS
+    GOTO :CONFIGURE_EXECUTION_POLICY
 )
 
 ECHO [INFO] Module not found. Checking options...
@@ -80,7 +80,7 @@ IF !OFFLINE_MODULE_FOUND! EQU 1 (
     
     IF !ERRORLEVEL! EQU 1 GOTO :INSTALL_OFFLINE
     IF !ERRORLEVEL! EQU 2 GOTO :INSTALL_ONLINE
-    IF !ERRORLEVEL! EQU 3 GOTO :SHOW_NEXT_STEPS
+    IF !ERRORLEVEL! EQU 3 GOTO :CONFIGURE_EXECUTION_POLICY
 ) ELSE (
     ECHO [INFO] Attempting online installation...
     ECHO.
@@ -109,7 +109,7 @@ DEL "%TEMP_PS1%" 2>nul
 
 IF %RESULT% EQU 0 (
     ECHO.
-    GOTO :UNBLOCK_SCRIPTS
+    GOTO :CONFIGURE_EXECUTION_POLICY
 ) ELSE (
     ECHO.
     ECHO [ERROR] Offline installation failed
@@ -120,7 +120,7 @@ IF %RESULT% EQU 0 (
         ECHO.
         GOTO :INSTALL_ONLINE
     ) ELSE (
-        GOTO :SHOW_NEXT_STEPS
+        GOTO :CONFIGURE_EXECUTION_POLICY
     )
 )
 
@@ -136,25 +136,63 @@ PowerShell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager
 IF %ERRORLEVEL% NEQ 0 (
     ECHO.
     ECHO [ERROR] Online installation failed
-    GOTO :SHOW_NEXT_STEPS
+    GOTO :CONFIGURE_EXECUTION_POLICY
 )
 
 ECHO.
 
+:CONFIGURE_EXECUTION_POLICY
+ECHO [STEP 2/5] Configuring ExecutionPolicy...
+ECHO.
+
+REM Configure for CurrentUser
+ECHO [INFO] Setting ExecutionPolicy for CurrentUser...
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "try { Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; Write-Host '[OK] CurrentUser: RemoteSigned' -ForegroundColor Green; exit 0 } catch { Write-Host '[ERROR] Failed to set CurrentUser policy' -ForegroundColor Red; exit 1 }"
+
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO [WARNING] Could not set ExecutionPolicy for CurrentUser
+)
+
+ECHO.
+ECHO [INFO] Setting ExecutionPolicy for SYSTEM account...
+
+REM Create temporary script for SYSTEM ExecutionPolicy configuration
+SET "TEMP_EXEC_PS1=%TEMP%\Set-SystemExecutionPolicy-%RANDOM%.ps1"
+ECHO try { > "%TEMP_EXEC_PS1%"
+ECHO     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force >> "%TEMP_EXEC_PS1%"
+ECHO     exit 0 >> "%TEMP_EXEC_PS1%"
+ECHO } catch { >> "%TEMP_EXEC_PS1%"
+ECHO     exit 1 >> "%TEMP_EXEC_PS1%"
+ECHO } >> "%TEMP_EXEC_PS1%"
+
+REM Create temporary scheduled task to run as SYSTEM
+SET "TEMP_TASK_NAME=SetExecPolicy-SYSTEM-%RANDOM%"
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File \"%TEMP_EXEC_PS1%\"'; $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2); $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; Register-ScheduledTask -TaskName '%TEMP_TASK_NAME%' -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null; Start-ScheduledTask -TaskName '%TEMP_TASK_NAME%'; Start-Sleep -Seconds 5; $info = Get-ScheduledTaskInfo -TaskName '%TEMP_TASK_NAME%'; $result = $info.LastTaskResult; Unregister-ScheduledTask -TaskName '%TEMP_TASK_NAME%' -Confirm:$false; if ($result -eq 0) { Write-Host '[OK] SYSTEM: RemoteSigned' -ForegroundColor Green } else { Write-Host '[WARNING] SYSTEM policy may need manual configuration' -ForegroundColor Yellow }; exit 0"
+
+REM Clean up temporary script
+DEL "%TEMP_EXEC_PS1%" 2>nul
+
+ECHO.
+
 :UNBLOCK_SCRIPTS
-ECHO [STEP 2/4] Unblocking scripts...
+ECHO [STEP 3/5] Unblocking scripts...
 ECHO.
 
 PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$f=Get-ChildItem '%SCRIPT_DIR%' -Filter *.ps1 -EA 0;if($f){$f|ForEach-Object{Unblock-File $_.FullName -EA 0;Write-Host \"[OK] $($_.Name)\" -ForegroundColor Green}}"
 
 ECHO.
-ECHO [STEP 3/4] Verifying...
+ECHO [STEP 4/5] Verifying...
 ECHO.
 
-PowerShell -NoProfile -ExecutionPolicy Bypass -Command "try{Import-Module RubrikSecurityCloud;$v=(Get-Module RubrikSecurityCloud).Version;Write-Host '[OK] Version:' $v -ForegroundColor Green;exit 0}catch{Write-Host '[ERROR] Verification failed' -ForegroundColor Red;exit 1}"
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "try{Import-Module RubrikSecurityCloud;$v=(Get-Module RubrikSecurityCloud).Version;Write-Host '[OK] Module Version:' $v -ForegroundColor Green;exit 0}catch{Write-Host '[ERROR] Module verification failed' -ForegroundColor Red;exit 1}"
 
 ECHO.
-ECHO [STEP 4/4] Complete
+
+REM Verify ExecutionPolicy settings
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$policies = Get-ExecutionPolicy -List; $current = ($policies | Where-Object { $_.Scope -eq 'CurrentUser' }).ExecutionPolicy; Write-Host '[OK] ExecutionPolicy (CurrentUser):' $current -ForegroundColor Green"
+
+ECHO.
+ECHO [STEP 5/5] Complete
 ECHO.
 
 :SHOW_NEXT_STEPS
@@ -163,6 +201,8 @@ ECHO   Status
 ECHO ============================================================
 ECHO.
 PowerShell -NoProfile -ExecutionPolicy Bypass -Command "if(Get-Module -ListAvailable RubrikSecurityCloud){$m=Get-Module -ListAvailable RubrikSecurityCloud|Select -First 1;Write-Host '  Module: [OK] Installed' -ForegroundColor Green;Write-Host '  Version:' $m.Version -ForegroundColor Gray}else{Write-Host '  Module: [FAIL] Not installed' -ForegroundColor Red}"
+ECHO.
+PowerShell -NoProfile -ExecutionPolicy Bypass -Command "$p = (Get-ExecutionPolicy -List | Where-Object { $_.Scope -eq 'CurrentUser' }).ExecutionPolicy; if ($p -eq 'RemoteSigned' -or $p -eq 'Unrestricted') { Write-Host '  ExecutionPolicy: [OK]' $p -ForegroundColor Green } else { Write-Host '  ExecutionPolicy: [WARNING]' $p -ForegroundColor Yellow }"
 ECHO.
 ECHO ============================================================
 ECHO   Next Steps

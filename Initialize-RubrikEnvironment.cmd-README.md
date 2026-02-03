@@ -4,19 +4,20 @@
 
 `Initialize-RubrikEnvironment.cmd` is a Windows Batch script that automates the setup of the Rubrik Security Cloud PowerShell environment. It handles module installation (online or offline), import verification, and prepares your system for automated backup operations.
 
-**NEW in v1.5.0**: Enhanced offline installation with support for NuGet package files (.nupkg) and nested archives!
+**NEW in v1.6.0**: Automatic PowerShell ExecutionPolicy configuration for both CurrentUser and SYSTEM accounts!
 
 ## Features
 
 - ✅ **Automatic Module Installation**: Downloads and installs the RubrikSecurityCloud PowerShell module if not present
+- ✅ **ExecutionPolicy Auto-Configuration**: Configures PowerShell ExecutionPolicy for CurrentUser and SYSTEM accounts (NEW in v1.6.0)
 - ✅ **Offline Installation Support**: Automatically detects and installs from local module packages
-- ✅ **NuGet Package Support**: Handles .nupkg files and nested archives (NEW in v1.5.0)
+- ✅ **NuGet Package Support**: Handles .nupkg files and nested archives
 - ✅ **Smart Installation Selection**: Choose between online or offline installation when both are available
-- ✅ **Embedded PowerShell Script**: Self-contained script with embedded installation logic (NEW in v1.5.0)
+- ✅ **Embedded PowerShell Script**: Self-contained script with embedded installation logic
 - ✅ **Import Verification**: Checks if the module is imported and imports it automatically if needed
 - ✅ **Script Unblocking**: Unblocks all PowerShell scripts in the current directory to prevent execution policy errors
 - ✅ **Network Troubleshooting**: Enhanced error handling for connectivity issues
-- ✅ **Debug Output**: Shows archive contents if installation fails for troubleshooting (NEW in v1.5.0)
+- ✅ **Debug Output**: Shows archive contents if installation fails for troubleshooting
 - ✅ **Clear Guidance**: Provides step-by-step instructions for next actions
 - ✅ **Error Handling**: Robust error checking with informative messages
 
@@ -149,7 +150,7 @@ REM - Installs the module
 
 ## What It Does
 
-The script performs four main steps:
+The script performs five main steps:
 
 ### Step 1: Module Check and Installation
 
@@ -169,19 +170,31 @@ The script performs four main steps:
    - **Installs** for ALL USERS (including SYSTEM)
 5. **Verifies** module installation and imports it
 
-### Step 2: Script Unblocking
+### Step 2: PowerShell ExecutionPolicy Configuration (NEW in v1.6.0)
+
+1. **Configures** ExecutionPolicy to `Bypass` for CurrentUser account
+2. **Configures** ExecutionPolicy to `Bypass` for SYSTEM account (via scheduled task)
+3. **Verifies** configuration for both accounts
+4. **Ensures** automated backup scripts can run without manual intervention
+
+This critical step enables:
+- ✅ Scheduled tasks to execute PowerShell scripts automatically
+- ✅ Scripts to run under SYSTEM account without ExecutionPolicy errors
+- ✅ Seamless automation of Rubrik backup operations
+
+### Step 3: Script Unblocking
 
 1. **Scans** the current directory for `.ps1` files
 2. **Unblocks** each PowerShell script to prevent execution policy warnings
 3. **Reports** which files were processed
 
-### Step 3: Module Verification
+### Step 4: Module Verification
 
 1. **Tests** module import functionality
 2. **Displays** installed module version
 3. **Confirms** availability for SYSTEM account
 
-### Step 4: Next Steps Guidance
+### Step 5: Next Steps Guidance
 
 Displays clear instructions for:
 - Creating a Service Account
@@ -198,7 +211,7 @@ Displays clear instructions for:
   Rubrik Security Cloud - Environment Initialization
 ============================================================
 
-[STEP 1/4] Checking Rubrik PowerShell Module...
+[STEP 1/5] Checking Rubrik PowerShell Module...
 
 [INFO] Module not found. Checking installation options...
 
@@ -235,18 +248,26 @@ Your choice [1/2/3]: 1
   Path: C:\Program Files\WindowsPowerShell\Modules\RubrikSecurityCloud
 [INFO] Module available for SYSTEM account (scheduled tasks)
 
-[STEP 2/4] Unblocking PowerShell scripts in current directory...
+[STEP 2/5] Configuring PowerShell ExecutionPolicy...
+
+[INFO] Setting ExecutionPolicy for CurrentUser...
+[OK] CurrentUser: Bypass
+[INFO] Setting ExecutionPolicy for SYSTEM account...
+[OK] SYSTEM account: Bypass
+[SUCCESS] ExecutionPolicy configured for automated tasks
+
+[STEP 3/5] Unblocking PowerShell scripts in current directory...
 
 [INFO] Found 3 PowerShell script(s)
 [OK] Unblocked: New-RscServiceAccount.ps1
 [OK] Unblocked: New-RscFileSnapshot.ps1
 [OK] Unblocked: New-RscFileSnapshotScheduler.ps1
 
-[STEP 3/4] Verifying module installation...
+[STEP 4/5] Verifying module installation...
 
 [OK] Module verified - Version: 1.2.3
 
-[STEP 4/4] Configuration completed
+[STEP 5/5] Configuration completed
 
 ============================================================
   Setup Status
@@ -306,13 +327,21 @@ Module Installation:
   Rubrik Security Cloud - Environment Initialization
 ============================================================
 
-[STEP 1/4] Checking Rubrik PowerShell Module...
+[STEP 1/5] Checking Rubrik PowerShell Module...
 
 [OK] Rubrik Security Cloud PowerShell Module is already installed
   Version: 1.2.3
   Path: C:\Program Files\WindowsPowerShell\Modules\RubrikSecurityCloud
 
-[STEP 2/4] Unblocking PowerShell scripts in current directory...
+[STEP 2/5] Configuring PowerShell ExecutionPolicy...
+
+[INFO] Checking ExecutionPolicy for CurrentUser...
+[OK] CurrentUser: Already set to Bypass
+[INFO] Checking ExecutionPolicy for SYSTEM account...
+[OK] SYSTEM account: Already set to Bypass
+[SUCCESS] ExecutionPolicy already configured
+
+[STEP 3/5] Unblocking PowerShell scripts in current directory...
 ...
 ```
 
@@ -616,6 +645,13 @@ The script uses the following variables:
 ## Security Considerations
 
 - The script uses `-ExecutionPolicy Bypass` only for its own operations
+- **NEW v1.6.0**: Automatically configures ExecutionPolicy to `Bypass` for:
+  - CurrentUser account (enables manual script execution)
+  - SYSTEM account (enables automated scheduled task execution)
+- ExecutionPolicy `Bypass` is required for enterprise automation but maintain other security controls:
+  - File Integrity Monitoring (FIM) for script changes
+  - Access Control Lists (ACL) on script directories
+  - Audit logging for script execution
 - Module installation is scoped to `AllUsers` (required for SYSTEM account access in scheduled tasks)
 - Administrator privileges are required for AllUsers installation
 - No credentials are stored or transmitted by this script
@@ -782,9 +818,55 @@ The `New-RscFileSnapshotScheduler.ps1` now **automatically configures SYSTEM acc
 - Verifies authentication before creating task
 - No manual PsExec configuration needed!
 
+### Why does the script configure ExecutionPolicy to Bypass? (NEW in v1.6.0)
+
+ExecutionPolicy `Bypass` is essential for enterprise automation:
+
+**Why it's needed:**
+- ✅ Allows scheduled tasks to run PowerShell scripts automatically
+- ✅ Prevents "cannot be loaded because running scripts is disabled" errors
+- ✅ Enables SYSTEM account to execute scripts without user interaction
+- ✅ Required for unattended backup automation
+
+**Security considerations:**
+- The script only configures ExecutionPolicy for PowerShell scripts
+- This does NOT disable Windows security features (Windows Defender, SmartScreen, etc.)
+- Maintain other security controls:
+  - File Integrity Monitoring on script directories
+  - Access Control Lists restricting who can modify scripts
+  - Audit logging for script execution
+  - Code signing for production environments (optional)
+
+**Alternative approaches if you prefer not to use Bypass:**
+1. Use `RemoteSigned` + sign your scripts with a code signing certificate
+2. Use Group Policy to configure ExecutionPolicy centrally
+3. Use scheduled tasks with `-ExecutionPolicy Bypass` argument per task
+
+### Can I verify the ExecutionPolicy configuration?
+
+Yes! After running the initialization script, you can check:
+
+```powershell
+# Check CurrentUser ExecutionPolicy
+Get-ExecutionPolicy -Scope CurrentUser
+
+# Check SYSTEM ExecutionPolicy (requires PsExec or scheduled task)
+# The initialization script does this automatically for you
+```
+
 ## Version History
 
-### Version 1.5.0 (February 2026) - Current
+### Version 1.6.0 (February 2026) - Current
+- ✨ **NEW**: Automatic PowerShell ExecutionPolicy configuration
+- ✨ **NEW**: Configures ExecutionPolicy for CurrentUser account
+- ✨ **NEW**: Configures ExecutionPolicy for SYSTEM account via scheduled task
+- ✨ **NEW**: Verifies ExecutionPolicy settings for both accounts
+- 🎯 **IMPACT**: Enables seamless automated task execution without manual intervention
+- 🎯 **IMPACT**: Eliminates ExecutionPolicy errors in scheduled tasks
+- 🎯 **IMPACT**: Critical for enterprise automation scenarios
+- 📝 Updated step count from 4 to 5 steps
+
+### Version 1.5.0 (February 2026)
 - ✨ **NEW**: NuGet package (.nupkg) support with automatic extraction
 - ✨ **NEW**: Nested archive handling (e.g., .nupkg.zip containing .nupkg)
 - ✨ **NEW**: Embedded PowerShell script using findstr extraction
